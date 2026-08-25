@@ -304,6 +304,7 @@ class SQLiteReviewRepository:
             sla_deadline=item.sla_deadline,
             escalated_at=item.escalated_at,
             sender_email=item.sender_email,
+            inbound_body=item.inbound_body,
         )
         async with self._factory() as session, session.begin():
             session.add(row)
@@ -382,6 +383,7 @@ def _row_to_review(row: ReviewRow) -> ReviewItem:
         sla_deadline=row.sla_deadline,
         escalated_at=row.escalated_at,
         sender_email=row.sender_email,
+        inbound_body=row.inbound_body,
     )
 
 

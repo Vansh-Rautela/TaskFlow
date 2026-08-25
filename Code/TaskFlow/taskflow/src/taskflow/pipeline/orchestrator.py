@@ -12,6 +12,7 @@ from typing import Any
 
 from taskflow.adapters.llm.router import ProviderRouter
 from taskflow.adapters.vector.qdrant_store import QdrantVectorStore
+from taskflow.config.settings import thresholds_config
 from taskflow.domain.models import InboundMessage, RoutingDecision
 from taskflow.pipeline.state import PipelineState
 from taskflow.ports.repositories import OutboxRepository, ReviewRepository, TraceRepository
@@ -64,9 +65,11 @@ async def run_pipeline(msg: InboundMessage, deps: Deps) -> RoutingDecision:
     state = PipelineState(message=redacted_msg, trace=trace)
 
     # 1. Classify
-    state, (intent, intent_confidence) = await _time_stage(
+    state, (intent, intent_confidence, classify_call) = await _time_stage(
         state, deps, "classify", classify_intent(redacted_body, router=deps.llm_router)
     )
+    if classify_call:
+        state.trace.llm_calls.append(classify_call)
     state = state.replace(intent=intent, intent_confidence=intent_confidence)
 
     # 2. Retrieve
@@ -79,17 +82,23 @@ async def run_pipeline(msg: InboundMessage, deps: Deps) -> RoutingDecision:
     # 3. Draft
     assert state.intent is not None
     assert state.retrieval is not None
-    state, draft = await _time_stage(
+    state, (draft, draft_call) = await _time_stage(
         state, deps, "draft", generate_draft(msg, state.intent, state.retrieval, deps.llm_router)
     )
+    if draft_call:
+        state.trace.llm_calls.append(draft_call)
     state = state.replace(draft=draft)
 
-    # 4. Validate
+    # 4. Validate & Policy Check
     assert state.draft is not None
     state, validators = await _time_stage(
         state, deps, "validate", run_validators(state.draft, state.retrieval)
     )
     state = state.replace(validators=tuple(validators))
+
+    # Evaluate Policy Rules
+    from taskflow.services.policy.service import evaluate_policies
+    violations = evaluate_policies(msg, state.draft, state.intent)
 
     # 5. Evaluate Gates (Safety Vetoes)
     assert state.intent is not None
@@ -105,9 +114,9 @@ async def run_pipeline(msg: InboundMessage, deps: Deps) -> RoutingDecision:
             evaluate_gates(
                 intent=state.intent,
                 intent_confidence=state.intent_confidence,
-                abstain_threshold=0.55,
+                abstain_threshold=thresholds_config()["gates"]["abstain_threshold"],
                 validators=list(state.validators),
-                violations=[],
+                violations=violations,
                 citations_resolve=citations_resolve,
                 suspicious_context=suspicious_context,
             )
@@ -118,13 +127,7 @@ async def run_pipeline(msg: InboundMessage, deps: Deps) -> RoutingDecision:
     grounding_val = next((v for v in state.validators if v.validator_name == "grounding"), None)
     grounding_score = grounding_val.score if grounding_val else 1.0
 
-    weights = {
-        "citation_coverage": 0.35,
-        "grounding_entailment": 0.25,
-        "retrieval_relevance": 0.20,
-        "intent_confidence": 0.10,
-        "tone_alignment": 0.10,
-    }
+    weights = thresholds_config()["weights"]
     signals = {
         "intent_confidence": state.intent_confidence,
         "retrieval_relevance": 1.0 if (state.retrieval and state.retrieval.sufficient) else 0.0,
@@ -137,7 +140,7 @@ async def run_pipeline(msg: InboundMessage, deps: Deps) -> RoutingDecision:
         gates=gates_result,
         signals=signals,
         weights=weights,
-        threshold=0.70,  # hardcoded for P2 stub
+        threshold=thresholds_config()["thresholds"]["general"],
         draft_confidence=state.draft.draft_confidence if state.draft else 0.0,
     )
 
@@ -181,8 +184,15 @@ async def run_pipeline(msg: InboundMessage, deps: Deps) -> RoutingDecision:
             created_at=now,
             sla_deadline=now + timedelta(hours=4),
             sender_email=msg.sender,
+            inbound_body=msg.body_text,
         )
         await deps.review_repo.create(review_item)
+
+        try:
+            from taskflow.services.alert.service import dispatch_alert
+            await dispatch_alert(review_item)
+        except Exception as err:
+            pass
 
     # 7. Finalize trace
     updated_trace = state.trace.model_copy(
@@ -194,6 +204,7 @@ async def run_pipeline(msg: InboundMessage, deps: Deps) -> RoutingDecision:
             "validators": list(state.validators),
             "confidence": state.confidence,
             "decision": decision,
+            "llm_calls": state.trace.llm_calls,
         }
     )
     state = state.replace(trace=updated_trace)

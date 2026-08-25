@@ -45,9 +45,9 @@ providers:
       supports_tools: false
       max_context: 32000
     models:
-      draft: qwen2.5:7b-instruct      # drop to qwen2.5:3b-instruct if your laptop is slow
-      grounding: qwen2.5:7b-instruct
-      datagen: qwen2.5:7b-instruct
+      draft: qwen3:8b      # drop to qwen2.5:3b-instruct if your laptop is slow
+      grounding: qwen3:8b
+      datagen: qwen3:8b
     timeout_s: 120                    # local generation is slower; measure yours in P4
     pricing: {in_per_1k: 0.0, out_per_1k: 0.0}
 

@@ -1,0 +1,10 @@
+{
+  "name": "taskflow-doc-export",
+  "private": true,
+  "type": "module",
+  "description": "Renders docs/*.md to PDF (chromium) and DOCX (LibreOffice), with mermaid diagrams pre-rendered.",
+  "dependencies": {
+    "marked": "^15.0.0",
+    "@mermaid-js/mermaid-cli": "^11.16.0"
+  }
+}

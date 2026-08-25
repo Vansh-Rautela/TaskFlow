@@ -4,15 +4,16 @@ Formats retrieved Knowledge Base chunks into prompt context and uses LLMRouter t
 tailored support responses with explicit citations [chunk_id].
 """
 
+from taskflow.config.settings import thresholds_config
 from taskflow.domain.enums import Intent
-from taskflow.domain.models import Citation, DraftOutput, InboundMessage, RetrievalResult
+from taskflow.domain.models import Citation, DraftOutput, InboundMessage, LLMCall, RetrievalResult
 from taskflow.ports.llm import LLMRouter
 
 SYSTEM_PROMPT = """You are an expert customer support agent writing a professional email response.
 Follow these strict guidelines:
 1. Base your response EXCLUSIVELY on the provided Knowledge Base Context chunks.
-2. Include inline bracketed citations matching chunk IDs for every policy or fact (e.g. [chunk_id]).
-3. Keep the tone professional, helpful, and concise.
+2. Include inline bracketed citations matching chunk IDs for every policy or fact (e.g. [chunk_id]). Ensure EVERY citation included in the `citations` list is actually referenced inline in the text.
+3. Keep the tone professional, helpful, and concise. Your chosen tone MUST be one of: "formal", "friendly", "apologetic", "neutral", or "technical". Do not use "professional" as the tone string.
 4. Never invent details, dates, or terms not supported by the context.
 """
 
@@ -36,7 +37,7 @@ async def generate_draft(
     intent: Intent,
     retrieval: RetrievalResult,
     router: LLMRouter,
-) -> DraftOutput:
+) -> tuple[DraftOutput, LLMCall | None]:
     """Generate a context-grounded response draft using LLMRouter."""
     context_text = _format_context(retrieval)
 
@@ -56,7 +57,7 @@ Knowledge Base Context:
             user=user_prompt,
             schema=DraftOutput,
         )
-        return draft
+        return draft, _call
     except Exception:
         # Fall back to a safe template draft when LLM providers fail or are unconfigured.
         # Quality gates will automatically route this to HUMAN_REVIEW.
@@ -72,5 +73,5 @@ Knowledge Base Context:
             citations=citations,
             tone="friendly",
             complexity="simple",
-            draft_confidence=0.50,
-        )
+            draft_confidence=thresholds_config()["fallback_confidences"].get("draft", 0.50),
+        ), None

@@ -40,7 +40,8 @@ deps_container: dict[str, Any] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db_url = "sqlite+aiosqlite:///data/taskflow.db"
+    from taskflow.config.settings import settings
+    db_url = settings().database_url
     engine = build_engine(db_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -50,12 +51,9 @@ async def lifespan(app: FastAPI):
     review_repo = SQLiteReviewRepository(factory)
     outbox_repo = SQLiteOutboxRepository(factory)
 
-    openrouter_p = OpenRouterProvider()
-    claude_p = ClaudeProvider()
-    ollama_p = OllamaProvider()
-    llm_router = ProviderRouter(
-        providers={"openrouter": openrouter_p, "claude": claude_p, "ollama": ollama_p}
-    )
+    # Load providers from configuration
+    from taskflow.adapters.llm.router import ProviderRouter
+    llm_router = ProviderRouter()
     vector_store = QdrantVectorStore()
 
     deps_container["deps"] = Deps(
@@ -96,6 +94,31 @@ class EditReviewRequest(BaseModel):
     edited_text: str
     operator: str = "operator_admin"
     reason: str = "human edit"
+
+
+from fastapi.responses import Response
+
+
+@app.get("/", summary="API Root Endpoint")
+async def root():
+    return {
+        "service": "TaskFlow Customer Support AI API",
+        "status": "online",
+        "docs_url": "/docs",
+        "available_endpoints": {
+            "health_check": "GET /healthz",
+            "ingest_message": "POST /messages",
+            "list_traces": "GET /traces",
+            "list_reviews": "GET /reviews",
+            "metrics": "GET /metrics",
+            "swagger_docs": "GET /docs",
+        },
+    }
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=204)
 
 
 @app.get("/healthz")

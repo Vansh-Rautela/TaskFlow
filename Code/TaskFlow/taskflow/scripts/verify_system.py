@@ -65,25 +65,71 @@ async def main():
         from tests.fixtures.fakes import FakeLLMProvider
 
         from taskflow.domain.enums import Intent
-        from taskflow.domain.models import Citation, ClassificationOutput, DraftOutput
+        from taskflow.domain.models import Citation, ClassificationOutput, DraftOutput, LLMCall
 
-        fake_llm = FakeLLMProvider(
-            responses={
-                "classification": ClassificationOutput(
-                    intent=Intent.TECHNICAL, confidence=0.95, reasoning="Technical query detected"
-                ),
-                "draft": DraftOutput(
-                    response_text="Thank you for reaching out regarding your technical issue. [KB-REFUND-006:2] Our support team has logged this request.",
-                    citations=[
-                        Citation(chunk_id="KB-REFUND-006:2", doc_title="Partial Refund Scenarios")
-                    ],
-                    tone="friendly",
-                    complexity="simple",
-                    draft_confidence=0.95,
-                ),
-            }
-        )
-        router = fake_llm
+        class DemoMockProvider(FakeLLMProvider):
+            async def complete_structured(
+                self, *, purpose, system, user, schema, model="fake-model"
+            ):
+                user_text = str(user).lower()
+
+                if purpose == "classification":
+                    if "webhook" in user_text:
+                        intent = Intent.TECHNICAL
+                        reason = "Technical query about webhooks"
+                    elif "refund" in user_text:
+                        intent = Intent.BILLING
+                        reason = "Billing query about refunds"
+                    elif "charge" in user_text:
+                        intent = Intent.DISPUTE
+                        reason = "Urgent dispute about unauthorized charge"
+                    else:
+                        intent = Intent.GENERAL
+                        reason = "General inquiry"
+
+                    output = ClassificationOutput(intent=intent, confidence=0.95, reasoning=reason)
+
+                elif purpose == "draft":
+                    if "504" in user_text:
+                        text = "To resolve the 504 Gateway Timeout, please increase your webhook timeout settings in the developer portal under Webhook Configuration. [KB-TECH-001:1] You can also enable async retries for better reliability."
+                        citations = [
+                            Citation(chunk_id="KB-TECH-001:1", doc_title="Webhook Configuration")
+                        ]
+                    elif "unused seats" in user_text:
+                        text = "We can certainly help with that. Since you reduced your team size, we can issue a prorated refund for the 5 unused seats. [KB-REFUND-006:2] The credit will appear on your next billing cycle."
+                        citations = [
+                            Citation(
+                                chunk_id="KB-REFUND-006:2", doc_title="Partial Refund Scenarios"
+                            )
+                        ]
+                    elif "41112" in user_text:
+                        text = "I apologize for the confusion regarding the $500 charge. I have escalated this immediately to our billing dispute team. [KB-BILLING-002:1] We take unauthorized charges very seriously."
+                        citations = [
+                            Citation(chunk_id="KB-BILLING-002:1", doc_title="Dispute Resolution")
+                        ]
+                    else:
+                        text = "Thank you for contacting us. We will get back to you shortly."
+                        citations = []
+
+                    output = DraftOutput(
+                        response_text=text,
+                        citations=citations,
+                        tone="formal",
+                        complexity="simple",
+                        draft_confidence=0.92,
+                    )
+
+                return output, LLMCall(
+                    purpose=purpose,
+                    provider=self.name,
+                    model=model,
+                    prompt_tokens=100,
+                    completion_tokens=200,
+                    cost_usd=0.0,
+                    latency_ms=1,
+                )
+
+        router = DemoMockProvider()
 
     deps = Deps(trace_repo=trace_repo, llm_router=router, vector_store=qdrant)
 

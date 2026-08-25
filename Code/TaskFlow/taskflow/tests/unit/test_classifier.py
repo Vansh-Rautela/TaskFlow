@@ -62,7 +62,9 @@ async def test_structured_llm_classification(monkeypatch):
     monkeypatch.setattr("taskflow.adapters.llm.router.model_for", lambda p, pur: "test-model")
 
     router = ProviderRouter(providers={"claude": MockClassifierProvider()})
-    intent, confidence = await classify_intent("I was double charged on my invoice", router=router)
+    intent, confidence, _call = await classify_intent(
+        "I was double charged on my invoice", router=router
+    )
 
     assert intent == Intent.BILLING
     assert confidence == 0.92
@@ -71,7 +73,7 @@ async def test_structured_llm_classification(monkeypatch):
 @pytest.mark.asyncio
 async def test_fallback_classification():
     """Keyword fallback classification when router is None."""
-    intent, confidence = await classify_intent("Can I get a refund?", router=None)
+    intent, confidence, _call = await classify_intent("Can I get a refund?", router=None)
     assert intent == Intent.REFUND
     assert confidence == 0.95
 
@@ -83,7 +85,9 @@ async def test_fallback_on_all_providers_failed(monkeypatch):
     monkeypatch.setattr("taskflow.adapters.llm.router.model_for", lambda p, pur: "test-model")
 
     router = ProviderRouter(providers={"claude": MockFailingClassifierProvider()})
-    intent, confidence = await classify_intent("I need an invoice for my company", router=router)
+    intent, confidence, _call = await classify_intent(
+        "I need an invoice for my company", router=router
+    )
 
     assert intent == Intent.BILLING
     assert confidence == 0.90
@@ -92,6 +96,6 @@ async def test_fallback_on_all_providers_failed(monkeypatch):
 @pytest.mark.asyncio
 async def test_empty_input_handling():
     """Empty string returns Intent.UNKNOWN with 0.0 confidence."""
-    intent, confidence = await classify_intent("   ", router=None)
+    intent, confidence, _call = await classify_intent("   ", router=None)
     assert intent == Intent.UNKNOWN
     assert confidence == 0.0

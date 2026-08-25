@@ -108,6 +108,7 @@ class ReviewRow(Base):
     sla_deadline: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     escalated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     sender_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    inbound_body: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class EditRecordRow(Base):

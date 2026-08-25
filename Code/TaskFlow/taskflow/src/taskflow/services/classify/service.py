@@ -4,8 +4,9 @@ Uses structured outputs via LLMRouter to classify customer messages into canonic
 Provides deterministic keyword fallback if LLM router is unavailable.
 """
 
+from taskflow.config.settings import thresholds_config
 from taskflow.domain.enums import Intent
-from taskflow.domain.models import ClassificationOutput
+from taskflow.domain.models import ClassificationOutput, LLMCall
 from taskflow.ports.llm import LLMRouter
 
 SYSTEM_PROMPT = """You are an expert customer support intent classifier.
@@ -26,11 +27,14 @@ Provide a confidence score between 0.0 and 1.0, and brief reasoning.
 
 
 def _fallback_classify(text: str) -> tuple[Intent, float]:
+    # Load confidence thresholds from config
+    fallback_thresholds = thresholds_config().get("fallback_confidences", {})
+    
     text_lower = text.lower()
     if any(kw in text_lower for kw in ("refund", "money back", "reimbursement")):
-        return Intent.REFUND, 0.95
+        return Intent.REFUND, fallback_thresholds.get("refund", 0.95)
     if any(kw in text_lower for kw in ("bill", "invoice", "charge", "charged")):
-        return Intent.BILLING, 0.90
+        return Intent.BILLING, fallback_thresholds.get("billing", 0.90)
     if any(
         kw in text_lower
         for kw in (
@@ -49,21 +53,23 @@ def _fallback_classify(text: str) -> tuple[Intent, float]:
             "nda",
         )
     ):
-        return Intent.TECHNICAL, 0.85
+        return Intent.TECHNICAL, fallback_thresholds.get("technical", 0.85)
     if any(kw in text_lower for kw in ("cancel", "close account", "erase my data")):
-        return Intent.REFUND, 0.90
+        return Intent.REFUND, fallback_thresholds.get("cancel", 0.90)
     if any(kw in text_lower for kw in ("login", "password", "2fa", "account")):
-        return Intent.ACCOUNT, 0.88
+        return Intent.ACCOUNT, fallback_thresholds.get("account", 0.88)
     if any(kw in text_lower for kw in ("terrible", "worst", "complain", "complaint", "ruined")):
-        return Intent.COMPLAINT, 0.98
+        return Intent.COMPLAINT, fallback_thresholds.get("complaint", 0.98)
 
-    return Intent.UNKNOWN, 0.40
+    return Intent.UNKNOWN, fallback_thresholds.get("unknown", 0.40)
 
 
-async def classify_intent(text: str, router: LLMRouter | None = None) -> tuple[Intent, float]:
+async def classify_intent(
+    text: str, router: LLMRouter | None = None
+) -> tuple[Intent, float, LLMCall | None]:
     """Classify message intent using structured LLM output with deterministic fallback."""
     if not text or not text.strip():
-        return Intent.UNKNOWN, 0.0
+        return Intent.UNKNOWN, 0.0, None
 
     if router is not None:
         try:
@@ -73,9 +79,11 @@ async def classify_intent(text: str, router: LLMRouter | None = None) -> tuple[I
                 user=text,
                 schema=ClassificationOutput,
             )
-            return output.intent, output.confidence
+            return output.intent, output.confidence, _call
         except Exception:
             # On LLM failover exhaustion, fall back gracefully to deterministic keyword logic
-            return _fallback_classify(text)
+            intent, conf = _fallback_classify(text)
+            return intent, conf, None
 
-    return _fallback_classify(text)
+    intent, conf = _fallback_classify(text)
+    return intent, conf, None

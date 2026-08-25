@@ -37,16 +37,7 @@ async def main() -> int:
     engine = build_engine(db_url)
     factory = build_session_factory(engine)
 
-    sys.path.insert(0, ".")
-    from tests.unit.test_providers import MockSuccessProvider
-
-    from taskflow.config.settings import settings
-
-    if not settings().anthropic_api_key:
-        mock_p = MockSuccessProvider()
-        llm_router = ProviderRouter(providers={"claude": mock_p, "ollama": mock_p})
-    else:
-        llm_router = ProviderRouter()
+    llm_router = ProviderRouter()
 
     trace_repo = SQLiteTraceRepository(factory)
     deps = Deps(trace_repo=trace_repo, llm_router=llm_router)
@@ -58,7 +49,7 @@ async def main() -> int:
         dedupe_key=f"console:{msg_id}",
         tenant_id="taskflow-demo",
         channel=Channel.CONSOLE,
-        sender="scenario_runner",
+        sender="custom_query_user",
         subject=None,
         body_text=args.text,
         body_redacted=args.text,
@@ -70,18 +61,33 @@ async def main() -> int:
     try:
         decision = await run_pipeline(msg, deps)
 
-        print("\n=== PIPELINE RESULT ===")
-        print(f"Action:       {decision.action.value}")
-        print(f"Reason:       {decision.reason}")
-        print(f"Reason Code:  {decision.reason_code}")
-        if decision.confidence:
-            print(f"Final Score:  {decision.confidence.score:.3f}")
-            print(f"Threshold:    {decision.confidence.threshold:.3f}")
-
-        # We can look up the trace_id by inspecting the DB since the orchestrator persisted it.
-        # But we'll just quickly fetch the most recent trace for our message
         trace = (await trace_repo.recent(limit=1))[0]
-        print(f"Trace ID:     {trace.trace_id}")
+
+        print("\n=================== PIPELINE EXECUTION RESULT ===================")
+        print(f"📌 Message ID:    {msg_id}")
+        print(f"🎯 Action Taken:  [{decision.action.value.upper()}]")
+        print(f"💡 Reason:        {decision.reason}")
+        print(f"🏷️  Reason Code:   {decision.reason_code}")
+        print(f"🏷️  Intent:        {trace.intent.value if trace.intent else 'N/A'} (Confidence: {trace.intent_confidence:.2f})")
+        if decision.confidence:
+            print(f"📊 Final Score:   {decision.confidence.score:.3f} (Threshold: {decision.confidence.threshold:.3f})")
+            failed_gates = decision.confidence.failed_gates
+            if failed_gates:
+                print(f"🛡️  Failed Gates:  {[g.gate_id.value for g in failed_gates]}")
+            else:
+                print("🛡️  Safety Gates:  All 7 Conjunctive Veto Gates Passed (CLEAR)")
+
+        if trace.draft:
+            print("\n🤖 GENERATED DRAFT RESPONSE:")
+            print("-" * 75)
+            print(trace.draft.response_text)
+            print("-" * 75)
+            if trace.draft.citations:
+                print(f"📚 Citations:     {[f'{c.doc_title} [{c.chunk_id}]' for c in trace.draft.citations]}")
+
+        print(f"💳 LLM Cost:      ${sum(c.cost_usd for c in trace.llm_calls):.6f} USD")
+        print(f"🔍 Trace ID:      {trace.trace_id}")
+        print("=================================================================\n")
 
     except Exception as e:
         print(f"\nERROR: {e}")

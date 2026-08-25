@@ -87,7 +87,7 @@ async def run_live_test(sender_email: str = "vaannsshhh@gmail.com"):
         outbox_repo=outbox_repo,
     )
 
-    test_queries = [
+    sample_queries = [
         {
             "subject": "Question regarding prorated refund for enterprise seats",
             "body": "Hi TaskFlow Team, we reduced our team size and need a prorated refund for 5 unused seats. Please help.",
@@ -96,9 +96,13 @@ async def run_live_test(sender_email: str = "vaannsshhh@gmail.com"):
             "subject": "URGENT: Billing dispute & charge error",
             "body": "Your system double charged my credit card 4111222233334444 for $500! Please fix this immediately!",
         },
+        {
+            "subject": "LEGAL THREAT: My business is ruined because of you!",
+            "body": "I am furious! Your recent outage cost me $10,000 in lost sales. I am filing a lawsuit against you tomorrow unless a manager calls me immediately. This is completely unacceptable!",
+        },
     ]
 
-    for idx, q in enumerate(test_queries, start=1):
+    for idx, q in enumerate(sample_queries, start=1):
         print(f"\n{'=' * 80}")
         print(f" 📥 INBOUND EMAIL #{idx} FROM {sender_email}")
         print(f"   Subject: {q['subject']}")

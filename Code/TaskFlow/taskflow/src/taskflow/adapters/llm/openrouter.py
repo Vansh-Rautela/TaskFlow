@@ -44,7 +44,7 @@ class OpenRouterProvider:
         user: str,
         model: str,
         max_tokens: int = 1200,
-        temperature: float = 0.2,
+        temperature: float = 0.7,
         schema: type[BaseModel] | None = None,
     ) -> LLMResponse:
         if not self._api_key:

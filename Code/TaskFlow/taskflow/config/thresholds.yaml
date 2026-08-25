@@ -20,6 +20,18 @@ gates:
   min_grounding_ratio: 0.80
   max_unsupported_claims: 0
 
+fallback_confidences:
+  refund: 0.95
+  billing: 0.90
+  technical: 0.85
+  cancel: 0.90
+  account: 0.88
+  complaint: 0.98
+  unknown: 0.40
+  draft: 0.50
+
+citation_validation_threshold: 0.70
+
 retrieval:
   prefetch_k: 20
   rerank_k: 5

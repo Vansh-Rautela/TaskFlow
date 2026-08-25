@@ -1,0 +1,6 @@
+node_modules/
+diagrams/
+docxout/
+*.print.html
+*.docx.html
+package-lock.json

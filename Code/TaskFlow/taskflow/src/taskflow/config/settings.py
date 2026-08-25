@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     gmail_label: str = "INBOX"
     gmail_user: str = ""
     gmail_app_password: str = ""
+    gmail_poll_seconds: int = 15
     ops_email: str = ""
 
     # alerts

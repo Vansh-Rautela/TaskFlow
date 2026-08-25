@@ -6,6 +6,7 @@ every cited ID exists within the retrieved context chunks.
 
 import re
 
+from taskflow.config.settings import thresholds_config
 from taskflow.domain.models import DraftOutput, RetrievalResult, ValidatorResult
 
 CITATION_PATTERN = re.compile(r"\[([a-zA-Z0-9_\-]+)\]")
@@ -30,11 +31,11 @@ async def validate_citations(
         # If no citations were generated when retrieval context was present, flag for review
         if retrieval and retrieval.chunks:
             return ValidatorResult(
-                validator_name="citations",
-                passed=True,
-                score=0.70,
-                reason="No inline citations found in draft",
-                blocking=False,
+            validator_name="citations",
+            passed=True,
+            score=thresholds_config()["citation_validation_threshold"],
+            reason="No inline citations found in draft",
+            blocking=False,
             )
         return ValidatorResult(
             validator_name="citations", passed=True, score=1.0, reason="ok", blocking=False

@@ -59,15 +59,30 @@ class OllamaProvider:
         format_arg = schema.model_json_schema() if schema is not None else None
 
         try:
-            response = await self._client.chat(
-                model=model,
-                messages=messages,
-                format=format_arg,
-                options={
-                    "temperature": temperature,
-                    "num_predict": max_tokens,
-                },
-            )
+            try:
+                response = await self._client.chat(
+                    model=model,
+                    messages=messages,
+                    format=format_arg,
+                    options={
+                        "temperature": temperature,
+                        "num_predict": max_tokens,
+                    },
+                )
+            except ollama.ResponseError as err:
+                if format_arg and isinstance(format_arg, dict):
+                    # Fallback to standard format="json" if model GBNF grammar generation fails
+                    response = await self._client.chat(
+                        model=model,
+                        messages=messages,
+                        format="json",
+                        options={
+                            "temperature": temperature,
+                            "num_predict": max_tokens,
+                        },
+                    )
+                else:
+                    raise
 
             content = response.message.content or ""
             if not content.strip():

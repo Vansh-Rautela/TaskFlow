@@ -31,6 +31,7 @@ async def approve_review(
     outbox_repo: OutboxRepository,
     review_id: str,
     operator: str = "operator",
+    reason: str = "approved by operator",
 ) -> bool:
     """Approve a pending review item and enqueue outbound message for sending."""
     item = await review_repo.get(review_id)

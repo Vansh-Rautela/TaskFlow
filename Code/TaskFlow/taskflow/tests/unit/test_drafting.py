@@ -60,7 +60,7 @@ async def test_generate_draft(sample_retrieval):
         received_at=datetime.now(UTC),
     )
 
-    draft = await generate_draft(msg, Intent.REFUND, sample_retrieval, router)
+    draft, _call = await generate_draft(msg, Intent.REFUND, sample_retrieval, router)
     assert isinstance(draft, DraftOutput)
     assert draft.response_text is not None
 
