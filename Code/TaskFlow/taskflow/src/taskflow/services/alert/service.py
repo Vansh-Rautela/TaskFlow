@@ -60,6 +60,11 @@ async def send_telegram_alert(text: str, parse_mode: str = "HTML") -> bool:
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    # Truncate text if exceeding Telegram 4096 character limit
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n[Truncated due to length]"
+
     payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
 
     try:
@@ -67,6 +72,10 @@ async def send_telegram_alert(text: str, parse_mode: str = "HTML") -> bool:
             res = await client.post(url, json=payload)
             if res.status_code != 200:
                 logger.warning("telegram_alert_http_error", status_code=res.status_code, response=res.text)
+                # Fallback to plain text if HTML parsing or formatting failed
+                fallback_payload = {"chat_id": chat_id, "text": text[:3900]}
+                fallback_res = await client.post(url, json=fallback_payload)
+                return fallback_res.status_code == 200
             return res.status_code == 200
     except Exception as err:
         logger.warning("telegram_alert_failed", error=str(err))
@@ -145,9 +154,13 @@ Quality Score: {score_val:.3f} (Threshold: {thresh_val:.3f})
 👉 Action: Open the TaskFlow Operator Dashboard to review, edit, or approve this item.
 """
 
+    # Truncate fields for Telegram alert to fit limits cleanly
+    q_tr = query_text[:500] + ("..." if len(query_text) > 500 else "")
+    d_tr = draft_text[:1000] + ("..." if len(draft_text) > 1000 else "")
+
     cust_email_h = html.escape(customer_email)
-    q_text_h = html.escape(query_text)
-    d_text_h = html.escape(draft_text)
+    q_text_h = html.escape(q_tr)
+    d_text_h = html.escape(d_tr)
     r_reason_h = html.escape(item.decision.reason)
     r_code_h = html.escape(item.decision.reason_code)
     c_str_h = html.escape(citations_str)

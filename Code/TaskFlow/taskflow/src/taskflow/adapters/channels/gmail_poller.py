@@ -119,6 +119,20 @@ class GmailIMAPPoller:
                     # Mark email as read / SEEN
                     mail.store(num, "+FLAGS", "\\Seen")
 
+                    # Ignore self-sent alert emails, mailer daemons, and system notifications
+                    sender_lower = sender.lower()
+                    subject_lower = subject.lower()
+                    ops_email = (settings().ops_email or "").lower()
+                    user_email = (self.user or "").lower()
+
+                    is_self_sender = bool((user_email and user_email in sender_lower) or (ops_email and ops_email in sender_lower))
+                    is_system_sender = any(sys_kw in sender_lower for sys_kw in ["mailer-daemon", "postmaster", "noreply", "no-reply"])
+                    is_alert_subject = "[taskflow alert]" in subject_lower or "taskflow alert" in subject_lower or "delivery status notification" in subject_lower
+
+                    if is_self_sender or is_system_sender or is_alert_subject:
+                        logger.info("gmail_poller_ignoring_system_email", sender=sender, subject=subject)
+                        continue
+
                     if body or subject:
                         fetched.append((message_id_hdr, sender, subject, body))
 
