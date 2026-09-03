@@ -38,7 +38,7 @@ Not code. It is the classic solo time sink because every step has a waiting peri
 
 **Goal.** A repository that lints, type-checks, tests, and enforces its own architecture.
 **Prerequisites.** None.
-**Reading.** `CLAUDE.md`, `AGENTS.md`.
+**Reading.** `docs/01_ARCHITECTURE.md`, `docs/02_ARCHITECTURE_DECISIONS.md`.
 
 **Files.** `pyproject.toml`, `Makefile`, `.env`, `.gitignore`, `.pre-commit-config.yaml`,
 `src/taskflow/**/__init__.py`, `tests/`, `scripts/check_no_hardcoded_models.py`.

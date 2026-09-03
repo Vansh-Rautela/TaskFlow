@@ -31,3 +31,6 @@ venv/
 secrets/
 *.key
 *.pem
+
+# Design-tool canvas artifacts
+design/
