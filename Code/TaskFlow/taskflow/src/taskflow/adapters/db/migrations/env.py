@@ -24,11 +24,24 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Override sqlalchemy.url from environment/settings
-_db_url = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./data/taskflow.db")
-# Alembic's sync runner needs a sync driver; swap aiosqlite → pysqlite for offline/autogenerate
+# Resolve the database URL, in precedence order:
+#   1. whatever the caller already set on the Config (adapters/db/bootstrap.py does
+#      this, and it must win — otherwise programmatic callers silently migrate the
+#      database named in the environment instead of the one they asked for);
+#   2. DATABASE_URL from the environment, for the `alembic` CLI;
+#   3. the project default.
+_db_url = (
+    config.get_main_option("sqlalchemy.url")
+    or os.environ.get("DATABASE_URL")
+    or "sqlite+aiosqlite:///./data/taskflow.db"
+)
+
+# Alembic's sync runner needs a sync driver; swap aiosqlite -> pysqlite.
 _sync_url = _db_url.replace("sqlite+aiosqlite", "sqlite")
 config.set_main_option("sqlalchemy.url", _sync_url)
+
+# The async runner needs the async driver back.
+_async_url = _db_url if "+aiosqlite" in _db_url else _db_url.replace("sqlite:", "sqlite+aiosqlite:")
 
 
 def run_migrations_offline() -> None:
@@ -55,7 +68,7 @@ async def run_async_migrations() -> None:
     from sqlalchemy.ext.asyncio import create_async_engine
 
     connectable = create_async_engine(
-        _db_url,
+        _async_url,
         poolclass=pool.NullPool,
     )
     async with connectable.connect() as connection:

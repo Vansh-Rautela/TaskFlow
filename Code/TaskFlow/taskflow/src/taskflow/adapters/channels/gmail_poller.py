@@ -1,76 +1,58 @@
 """Gmail IMAP Inbound Poller Adapter for TaskFlow.
 
 Polls imap.gmail.com:993 using GMAIL_USER and GMAIL_APP_PASSWORD configured in .env.
-Fetches unseen inbound messages, parses email headers and body text, constructs
-InboundMessage domain objects, and runs them through the TaskFlow pipeline.
+Fetches unseen inbound messages, parses email headers and body text, and posts each
+one to the API's `POST /messages` endpoint rather than running the pipeline
+in-process.
+
+That indirection matters: the API already holds the embedded Qdrant store's
+exclusive file lock (`data/qdrant/.lock`) for the lifetime of the process. A second
+process opening `QdrantClient` against the same path — this poller, if it built its
+own `Deps` and called `run_pipeline` directly — crashes immediately with "Storage
+folder already accessed by another instance". Routing every inbound message through
+the already-running API sidesteps that: this process never touches the vector
+store, so only one process ever holds the lock, however many inbound channels run
+alongside it. `gmail_push.py` (Track C) uses this same client.
 """
 
 import asyncio
 import email
 import imaplib
-import re
 import uuid
-from datetime import UTC, datetime
-from email.header import decode_header
-from typing import Any
 
 import structlog
 
-from taskflow.config.settings import settings
+from taskflow.adapters.channels._api_client import post_inbound_message
+from taskflow.adapters.channels._email_parsing import (
+    clean_email_address,
+    decode_str,
+    extract_body,
+    is_ignorable_sender,
+    strip_quoted_reply,
+)
+from taskflow.config.settings import app_config, settings
 from taskflow.domain.enums import Channel
-from taskflow.domain.models import InboundMessage
-from taskflow.pipeline.orchestrator import Deps, run_pipeline
+from taskflow.domain.errors import ProviderError, TransientError
 
 logger = structlog.get_logger()
 
 
-def _decode_str(header_val: Any) -> str:
-    if not header_val:
-        return ""
-    if isinstance(header_val, bytes):
-        return header_val.decode("utf-8", errors="ignore")
-    decoded_parts = decode_header(header_val)
-    res = []
-    for content, encoding in decoded_parts:
-        if isinstance(content, bytes):
-            enc = encoding or "utf-8"
-            res.append(content.decode(enc, errors="ignore"))
-        else:
-            res.append(str(content))
-    return "".join(res)
-
-
-def _clean_email_address(raw_sender: str) -> str:
-    match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", raw_sender)
-    if match:
-        return match.group(0)
-    return raw_sender.strip()
-
-
-def _extract_body(msg_obj: email.message.Message) -> str:
-    body_parts = []
-    if msg_obj.is_multipart():
-        for part in msg_obj.walk():
-            content_type = part.get_content_type()
-            content_disposition = str(part.get("Content-Disposition"))
-            if content_type == "text/plain" and "attachment" not in content_disposition:
-                payload = part.get_payload(decode=True)
-                if payload:
-                    body_parts.append(payload.decode("utf-8", errors="ignore"))
-    else:
-        payload = msg_obj.get_payload(decode=True)
-        if payload:
-            body_parts.append(payload.decode("utf-8", errors="ignore"))
-
-    return "\n".join(body_parts).strip()
-
-
 class GmailIMAPPoller:
-    """Polls Gmail IMAP box for unseen emails and processes them via TaskFlow pipeline."""
+    """Polls Gmail IMAP for unseen emails and posts each to the TaskFlow API."""
 
-    def __init__(self, deps: Deps, poll_interval_s: float = 15.0) -> None:
-        self.deps = deps
-        self.poll_interval_s = poll_interval_s
+    def __init__(
+        self,
+        api_base_url: str | None = None,
+        api_token: str | None = None,
+        poll_interval_s: float | None = None,
+    ) -> None:
+        self.api_base_url = api_base_url or settings().taskflow_api_base_url
+        self.api_token = api_token or settings().taskflow_api_token
+        self.poll_interval_s = (
+            poll_interval_s
+            if poll_interval_s is not None
+            else float(app_config().get("pollers", {}).get("gmail_interval_s", 30))
+        )
         self.user = settings().gmail_user
         self.password = settings().gmail_app_password
 
@@ -86,7 +68,9 @@ class GmailIMAPPoller:
     async def poll_once(self) -> int:
         """Connect to IMAP, fetch UNSEEN emails, and run through pipeline."""
         if not self.user or not self.password:
-            logger.warning("gmail_poller_skipped", reason="Missing GMAIL_USER or GMAIL_APP_PASSWORD")
+            logger.warning(
+                "gmail_poller_skipped", reason="Missing GMAIL_USER or GMAIL_APP_PASSWORD"
+            )
             return 0
 
         processed_count = 0
@@ -109,28 +93,30 @@ class GmailIMAPPoller:
                         continue
 
                     raw_email = data[0][1]
+                    if not isinstance(raw_email, bytes):
+                        logger.warning("gmail_poller_unexpected_fetch_payload", num=str(num))
+                        continue
                     msg_obj = email.message_from_bytes(raw_email)
 
-                    subject = _decode_str(msg_obj.get("Subject"))
-                    sender = _clean_email_address(_decode_str(msg_obj.get("From")))
-                    message_id_hdr = _decode_str(msg_obj.get("Message-ID")) or f"gmail-{uuid.uuid4().hex[:8]}"
-                    body = _extract_body(msg_obj)
+                    subject = decode_str(msg_obj.get("Subject"))
+                    sender = clean_email_address(decode_str(msg_obj.get("From")))
+                    message_id_hdr = (
+                        decode_str(msg_obj.get("Message-ID")) or f"gmail-{uuid.uuid4().hex[:8]}"
+                    )
+                    body = extract_body(msg_obj)
 
                     # Mark email as read / SEEN
                     mail.store(num, "+FLAGS", "\\Seen")
 
-                    # Ignore self-sent alert emails, mailer daemons, and system notifications
-                    sender_lower = sender.lower()
-                    subject_lower = subject.lower()
-                    ops_email = (settings().ops_email or "").lower()
-                    user_email = (self.user or "").lower()
-
-                    is_self_sender = bool((user_email and user_email in sender_lower) or (ops_email and ops_email in sender_lower))
-                    is_system_sender = any(sys_kw in sender_lower for sys_kw in ["mailer-daemon", "postmaster", "noreply", "no-reply"])
-                    is_alert_subject = "[taskflow alert]" in subject_lower or "taskflow alert" in subject_lower or "delivery status notification" in subject_lower
-
-                    if is_self_sender or is_system_sender or is_alert_subject:
-                        logger.info("gmail_poller_ignoring_system_email", sender=sender, subject=subject)
+                    if is_ignorable_sender(
+                        sender=sender,
+                        subject=subject,
+                        user_email=self.user or "",
+                        ops_email=settings().ops_email or "",
+                    ):
+                        logger.info(
+                            "gmail_poller_ignoring_system_email", sender=sender, subject=subject
+                        )
                         continue
 
                     if body or subject:
@@ -145,29 +131,37 @@ class GmailIMAPPoller:
         fetched_messages = await loop.run_in_executor(None, _fetch_unseen_emails)
 
         for msg_id_hdr, sender, subject, body in fetched_messages:
-            msg_id = f"gmail-{uuid.uuid4().hex[:8]}"
-            dedupe_key = f"email:{msg_id_hdr}"
-
-            inbound = InboundMessage(
-                message_id=msg_id,
-                dedupe_key=dedupe_key,
-                tenant_id=settings().taskflow_tenant_id or "taskflow-demo",
-                channel=Channel.EMAIL,
-                sender=sender,
-                subject=subject,
-                body_text=body or subject or "No body text provided",
-                body_redacted=body or subject or "No body text provided",
-                provider_message_id=msg_id_hdr,
-                received_at=datetime.now(UTC),
-            )
+            body_text = strip_quoted_reply(body) or subject or "No body text provided"
 
             try:
-                logger.info("gmail_processing_inbound", sender=sender, subject=subject, message_id=msg_id)
-                decision = await run_pipeline(inbound, self.deps)
+                logger.info(
+                    "gmail_processing_inbound",
+                    sender=sender,
+                    subject=subject,
+                    message_id=msg_id_hdr,
+                )
+                # message_id is the RFC-822 Message-ID header: the API derives the
+                # dedupe key from it, so redelivery of the same mail produces the
+                # same key and the pipeline's dedupe gate catches it.
+                result = await post_inbound_message(
+                    api_base_url=self.api_base_url,
+                    api_token=self.api_token,
+                    message_id=msg_id_hdr,
+                    tenant_id=settings().taskflow_tenant_id or "taskflow-demo",
+                    channel=Channel.EMAIL.value,
+                    sender=sender,
+                    subject=subject,
+                    body_text=body_text,
+                )
                 processed_count += 1
-                logger.info("gmail_processed_inbound", action=decision.action.value, reason=decision.reason)
-            except Exception as err:
-                logger.error("gmail_pipeline_error", message_id=msg_id, error=str(err))
+                logger.info(
+                    "gmail_processed_inbound",
+                    action=result.get("action"),
+                    reason=result.get("reason"),
+                    message_id=msg_id_hdr,
+                )
+            except (TransientError, ProviderError) as err:
+                logger.error("gmail_api_post_failed", message_id=msg_id_hdr, error=str(err))
 
         return processed_count
 

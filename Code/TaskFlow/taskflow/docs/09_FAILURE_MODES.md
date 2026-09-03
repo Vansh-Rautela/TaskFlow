@@ -20,7 +20,8 @@ Every row here is a test in `tests/unit` or `tests/integration`.
 | Classifier artifact missing | load fails at startup | **the app refuses to start** | none | nothing | loud startup failure — never silently degrade to a keyword stub |
 | Unknown intent / abstain | max prob < τ | gate G5 → human review | none | nothing | queued with SLA |
 | Critical policy violation | deterministic rule match | gate G1 → human review with rule id | none | nothing | queued; alert if severity critical |
-| PII in draft | regex match | gate G2 → human review | none | nothing | logged with match types, never the values |
+| PII in draft | `RegexPIIDetector` (fixed formats) or the injected `PresidioDetector` (adds named entities) — see `ports.pii` | gate G2 → human review | none | nothing | logged with match types, never the values |
+| **Own product name flagged as PII** | `PresidioDetector`'s PERSON model misreads a known proper noun (measured: "AcmeFlow Workspace" at 0.85 confidence — appears in nearly every draft) | `config/settings.yaml`'s `pii.allow_list` suppresses it by exact match | none — add the phrase to the list | nothing (would otherwise be gate G2 on close to every auto-send) | if G2 starts firing repeatedly on the same clean phrase, this is why |
 | Unresolvable citation | set difference | gate G3 → human review | none | nothing | logged |
 | Insufficient retrieval | sufficiency check false | skip drafting → human + `retrieval_gap` | none (no loop) | nothing | gap analyzer |
 | Suspicious context | injection patterns in chunks | gate G7 → human review | none | nothing | alert — this is a security event |

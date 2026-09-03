@@ -9,6 +9,7 @@ from collections.abc import Coroutine, Sequence
 from typing import Any
 
 from taskflow.domain.models import DraftOutput, RetrievalResult, ValidatorResult
+from taskflow.ports.pii import PIIDetector
 from taskflow.services.validate.citations import validate_citations
 from taskflow.services.validate.grounding import validate_grounding
 from taskflow.services.validate.pii_leak import validate_pii
@@ -18,6 +19,7 @@ async def run_validators(
     draft: DraftOutput,
     retrieval: RetrievalResult | None,
     timeout_s: float = 15.0,
+    pii_detector: PIIDetector | None = None,
 ) -> Sequence[ValidatorResult]:
     """Run all validators concurrently."""
 
@@ -46,7 +48,7 @@ async def run_validators(
             )
 
     tasks = [
-        safe_run("pii_leak", validate_pii(draft)),
+        safe_run("pii_leak", validate_pii(draft, pii_detector)),
         safe_run("citations", validate_citations(draft, retrieval)),
         safe_run("grounding", validate_grounding(draft, retrieval)),
     ]

@@ -23,51 +23,55 @@ it is not allowed to answer, and can prove why.*
 
 ## Commands that work today
 
-The Makefile contains aspirational targets. These are the ones whose backing
-scripts/modules actually exist — verify before relying on any other target:
+Every Makefile target below resolves to a script or module that exists. The
+"aspirational targets" list that used to live here is gone: as of 2026-08-25 the
+Makefile was rewritten so there is no gap between what it advertises and what runs.
 
 ```bash
-make setup          # uv sync + alembic upgrade head + ollama pull (first time)
-make api            # FastAPI + worker, :8000
-                    # NOTE: Makefile says taskflow.api.main:app but the module is
-                    # taskflow.api.app:app — fix the Makefile or run uvicorn directly:
-                    #   uv run uvicorn taskflow.api.app:app --reload --port 8000
-make dash           # Streamlit dashboard, :8501
+make setup          # uv sync + alembic upgrade head + knowledge-base ingestion
+make preflight      # is this installation able to run? must exit 0
+make api            # FastAPI, :8000   (module is taskflow.api.app:app)
+make dash           # Streamlit operator console, :8501
+make worker         # outbox delivery worker (real SMTP)
+make poller         # Gmail IMAP inbound poller
+make sla            # SLA breach sweeper
 make lint           # ruff format + autofix
-make typecheck      # mypy + lint-imports (architecture contract)
-make test           # unit tests, ~30s, no network
-make test-int       # pytest -m integration (needs Qdrant on disk + Ollama running)
-make check          # lint + typecheck + test — run before every commit
+make typecheck      # mypy + lint-imports (4 architecture contracts)
+make test           # unit tests, fast, no network
+make test-int       # integration tests (Qdrant + SQLite on disk)
+make test-e2e       # end-to-end scenarios
+make test-all       # the whole suite
+make check          # lint + typecheck + test-all — run before every commit
 make migrate        # alembic upgrade head
-make ingest         # rebuild embedded Qdrant collection from data/knowledge_base/
-make datasets       # generate classifier datasets + leakage check
+make ingest         # rebuild the embedded Qdrant collection (ingest_kb.py --recreate)
+make datasets       # regenerate classifier datasets + leakage check
+make eval           # retrieval + classifier evaluation reports
+make scenario S=refund_750   # one named scenario through the real pipeline
+make scenarios      # all of them
+make local          # the same, with no cloud LLM at all
 ```
 
-**Broken/aspirational Makefile targets** (script or module does not exist — do not
-run, or implement first): `make kb` (no `scripts/generate_kb.py`), `make train` and
-`make eval` (no `taskflow/ml/train_classifier.py` or `taskflow/ml/evaluate.py` — the
-`ml/` package is an empty `__init__.py`; use `scripts/eval_classifier.py`,
-`scripts/eval_retrieval.py`, `scripts/eval_drafting.py` directly),
-`make scenario S=...` (`run_scenario.py` takes `--text`, not `--scenario`),
-`make preflight` (no `scripts/preflight.py`), `make demo-reset` (no seeded snapshot),
-`make local` (passes `--all`, which `run_scenario.py` does not accept),
-`make test-e2e` (`tests/e2e/` is empty).
-
-Useful script invocations that do work:
+Scripts, if you prefer to call them directly:
 
 ```bash
-uv run python scripts/run_scenario.py --text "I need a refund"   # one message through the pipeline
-uv run python scripts/verify_system.py                           # 3-query live health demo
-uv run python scripts/test_live_sender.py                        # live E2E: pipeline + SMTP + Telegram alert
-uv run python scripts/eval_classifier.py                         # writes docs/metrics/classification.md
+uv run python scripts/preflight.py                            # real state checks only
+uv run python scripts/run_scenario.py --text "I need a refund"
+uv run python scripts/run_scenario.py --scenario refund_750
+uv run python scripts/eval_retrieval.py                       # -> docs/metrics/retrieval.md
+uv run python scripts/eval_retrieval.py --no-rerank           # what reranking is worth
+uv run python scripts/eval_classifier.py --path keyword       # -> docs/metrics/classification.md
+uv run python scripts/eval_drafting.py --limit 10             # real pipeline; costs money
 ```
 
 ## Before implementing anything
 
-1. Read `docs/03_IMPLEMENTATION_PLAN.md` and identify the current phase.
-2. Read the phase's **Interfaces** and **Definition of done** sections.
+1. Read `docs/BRD.md` — it is authoritative for what the system must do, and §5.2/§5.3
+   record what is deliberately out of scope or deferred.
+2. Read `docs/REMEDIATION_STATUS.md` — it records what was broken, what was fixed, the
+   evidence for each, and the open findings. Do not re-fix something already closed, and
+   do not reopen a documented deferral without a reason.
 3. Read `docs/04_SCHEMAS.md` for any object you will touch.
-4. State the files you will create or modify, and wait for approval before writing code.
+4. State the files you will create or modify before writing code.
 
 Do not implement more than one phase step at a time. Do not write code for a later
 phase because it seems convenient.
@@ -79,24 +83,24 @@ Hexagonal (ports & adapters), enforced by `lint-imports`:
 ```
 src/taskflow/
   domain/     Pydantic models, enums, errors      — pure, no I/O
-  ports/      Protocol definitions (llm, vector_store, repositories, cache, channel, event_bus)
+  ports/      Protocol definitions (llm, vector_store, reranker, repositories, channel)
   services/   business logic, one subpackage per capability
               (classify, retrieve, draft, validate, confidence, review, alert, cost, ...)
-  adapters/   llm/ (openrouter, claude, ollama, router) vector/ (qdrant) db/ (sqlite+alembic)
-              channels/ bus/ cache/ resilience/      — SDKs ONLY here; the last four are stubs
+  adapters/   llm/ (openrouter, claude, ollama, router) vector/ (qdrant) rerank/ (cross_encoder)
+              db/ (sqlite+alembic) channels/ (gmail_poller, smtp_email)   — SDKs ONLY here
   pipeline/   orchestrator.py + state.py           — explicit async function, no framework
-  api/        app.py (FastAPI, lifespan-wired deps) — routers/ is a stub
-  worker/     outbox_worker.py                     — polls outbox, delivers via alert service
-  ml/         EMPTY — classifier train/eval not implemented yet
-  dashboard/  pages/ stub; real dashboard is top-level dashboard/app.py
+  api/        app.py (FastAPI, bearer-authenticated, lifespan-wired deps)
+  worker/     outbox_worker.py                     — polls outbox, delivers via a channel port
+  bootstrap.py  the composition root — the one place adapters are wired to ports
+  dashboard is the top-level dashboard/app.py
 ```
 
 **Request flow** (`pipeline/orchestrator.py:run_pipeline`):
-classify → retrieve → draft → validate (concurrent validators) → **gates** (7 conjunctive
+dedupe → redact → classify → retrieve → draft → validate (concurrent) → policy → **gates** (8 conjunctive
 safety vetoes) → weighted confidence score → decide → AUTO_SEND enqueues to outbox /
 HUMAN_REVIEW creates a review item → trace finalized. Every stage writes a timed trace
 event. The outbox worker (`worker/outbox_worker.py`) claims queued messages and delivers
-via `services/alert/service.py` (Gmail SMTP, Telegram, Slack, generic webhook).
+via `services/alert/service.py` (Gmail SMTP, Telegram, generic webhook).
 
 **Config layering:** secrets and paths in `.env` (pydantic-settings), behavior in
 `config/*.yaml`, prompts in `config/prompts/`. `config/settings.py:model_for()` is the
@@ -144,14 +148,21 @@ and JSON that fails `schema.model_validate_json`). If all providers fail it rais
 
 ## Testing
 
-- `tests/unit/` — fast, no network/disk/Ollama. Use `FakeLLMProvider` and
-  `FakeVectorStore` from `tests/fixtures/fakes.py` (fixtures wired in `tests/conftest.py`).
+- `tests/unit/` — fast, no network/disk/Ollama. Use `FakeLLMRouter`, `FakeVectorStore`,
+  `RecordingChannel` and `FakeLLMProvider` from `tests/fixtures/fakes.py`. Each double
+  implements the same Protocol as the adapter it replaces; a double whose shape has
+  drifted from its port lets a test pass against an interface that does not exist.
+- `tests/conftest.py` installs a session-wide autouse fixture that blanks every
+  credential. Do not bypass it: before it existed, running the suite against a populated
+  `.env` dispatched real alert emails through a live Gmail account.
 - `tests/pipeline/` — orchestrator tests with mocked providers and in-memory SQLite.
 - pytest markers: `integration` (Qdrant/SQLite/Ollama on disk), `live` (real API calls,
   costs money), `e2e`, `slow`. `asyncio_mode = "auto"` — no `@pytest.mark.asyncio` needed.
 - E2E tests assert **routing decisions and reason codes**, never generated prose.
 - Write the test before the implementation for: gates, confidence scoring, dedupe,
-  outbox send-once, SLA computation, circuit breaker transitions.
+  outbox send-once, delivery state transitions, and SLA computation.
+- A test is only "end-to-end" if the boundary under test is real. Mocking the pipeline
+  and asserting the mock was called is not an E2E test.
 - Never call a live LLM API inside a unit test. Never delete or weaken a failing test.
 
 ## Migrations (Alembic)
@@ -166,8 +177,8 @@ and JSON that fails `schema.model_validate_json`). If all providers fail it rais
 
 ## Rejected technologies — do not introduce
 
-Docker, Redis, Kafka, RabbitMQ, Celery, Elasticsearch, LangGraph, Slack (as an app
-dependency — the alert webhook is fine), LangChain, a second database, a hosted
+Docker, Redis, Kafka, RabbitMQ, Celery, Elasticsearch, LangGraph, Slack (including as
+an alert channel — removed; not in use), LangChain, a second database, a hosted
 deployment, MCP servers. Each has a written rejection in
 `docs/02_ARCHITECTURE_DECISIONS.md`. Adding one requires overturning an ADR first.
 

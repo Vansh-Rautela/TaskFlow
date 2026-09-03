@@ -15,7 +15,6 @@ from taskflow.domain.models import (
 from taskflow.services.alert.service import (
     dispatch_alert,
     send_email_alert,
-    send_slack_alert,
     send_telegram_alert,
 )
 
@@ -55,14 +54,6 @@ async def test_send_email_alert_unconfigured():
 
 
 @pytest.mark.asyncio
-async def test_send_slack_alert_unconfigured(monkeypatch):
-    """Returns False when SLACK_WEBHOOK_URL is unconfigured."""
-    monkeypatch.setattr(settings(), "slack_webhook_url", "")
-    res = await send_slack_alert("Test Slack Message")
-    assert not res
-
-
-@pytest.mark.asyncio
 async def test_send_telegram_alert_unconfigured(monkeypatch):
     """Returns False when TELEGRAM_BOT_TOKEN is unconfigured."""
     monkeypatch.setattr(settings(), "telegram_bot_token", "")
@@ -77,5 +68,4 @@ async def test_dispatch_alert(sample_review_item):
     assert isinstance(results, dict)
     assert "email" in results
     assert "telegram" in results
-    assert "slack" in results
     assert "webhook" in results

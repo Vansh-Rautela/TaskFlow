@@ -10,20 +10,27 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from taskflow.domain.enums import Intent
+
 DATA_DIR = Path("data")
 DATASETS_DIR = DATA_DIR / "datasets"
 MANIFESTS_DIR = DATA_DIR / "manifests"
 
-INTENTS = ["billing", "refund", "cancellation", "technical", "enterprise", "complaint", "other"]
+# The canonical taxonomy is `taskflow.domain.enums.Intent` and nothing else. Earlier
+# revisions of this file emitted `cancellation`, `enterprise` and `other`, which are not
+# enum members — the system cannot produce them, so every sample carrying one scored as
+# an error. Datasets already committed keep those labels; `scripts/eval_classifier.py`
+# maps them at scoring time and says so in its report.
+INTENTS = [i.value for i in Intent]
 
 SAMPLE_TRAIN_DATA = [
     {"text": "I was double charged on my last invoice", "intent": "billing"},
     {"text": "Can I get a prorated refund for my plan?", "intent": "refund"},
-    {"text": "I want to cancel my subscription immediately", "intent": "cancellation"},
-    {"text": "How do I setup SSO SAML for Enterprise?", "intent": "enterprise"},
+    {"text": "I want to cancel my subscription immediately", "intent": "account"},
+    {"text": "How do I setup SSO SAML for Enterprise?", "intent": "technical"},
     {"text": "API requests are returning 500 error", "intent": "technical"},
     {"text": "Your service downtime ruined my product launch", "intent": "complaint"},
-    {"text": "What are your office hours?", "intent": "other"},
+    {"text": "What are your office hours?", "intent": "general"},
 ]
 
 DEMO_SCENARIOS = [
@@ -76,11 +83,11 @@ def _write_manifest(dataset_name: str, rows_count: int, sha256_hash: str, genera
 SAMPLE_TEST_DATA = [
     {"text": "My card was charged twice for order #9921", "intent": "billing"},
     {"text": "I need a reimbursement for unused seat licenses", "intent": "refund"},
-    {"text": "Close my account immediately and erase my data", "intent": "cancellation"},
-    {"text": "How do we request custom SOC2 report under NDA?", "intent": "enterprise"},
+    {"text": "Close my account immediately and erase my data", "intent": "account"},
+    {"text": "How do we request custom SOC2 report under NDA?", "intent": "technical"},
     {"text": "Webhook endpoint keeps timing out with 504", "intent": "technical"},
     {"text": "This bug ruined our production system!", "intent": "complaint"},
-    {"text": "Where is your team based?", "intent": "other"},
+    {"text": "Where is your team based?", "intent": "general"},
 ]
 
 
@@ -105,11 +112,11 @@ def main() -> int:
     intent_doc_map = {
         "billing": ["KB-BILL-001", "KB-BILL-003"],
         "refund": ["KB-REFUND-001", "KB-REFUND-002"],
-        "cancellation": ["KB-CANCEL-001"],
-        "enterprise": ["KB-ENT-001"],
-        "technical": ["KB-TROUBLE-001"],
+        "account": ["KB-CANCEL-001"],
+        # SSO/SAML/SOC2 material and general troubleshooting are both TECHNICAL.
+        "technical": ["KB-ENT-001", "KB-TROUBLE-001"],
         "complaint": ["KB-TROUBLE-003"],
-        "other": ["KB-PRICING-001"],
+        "general": ["KB-PRICING-001"],
     }
     golden_rows = [
         {

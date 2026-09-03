@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Outbox Delivery Worker Daemon CLI.
+"""Outbox delivery worker.
 
-Polls the transactional outbox repository for QUEUED outbound replies,
-delivers them via Gmail SMTP / Webhooks, and updates status to SENT.
+Claims QUEUED outbound replies and delivers them over Gmail SMTP. A message is
+marked SENT only when SMTP accepted it; anything else is retried and then marked
+DEAD once `worker.max_attempts` is reached.
 
-Usage:
     uv run python scripts/start_worker.py
 """
 
@@ -13,30 +13,28 @@ import sys
 
 import structlog
 
-from taskflow.adapters.db.engine import build_engine, build_session_factory
-from taskflow.adapters.db.repositories import SQLiteOutboxRepository
+from taskflow.bootstrap import runtime
 from taskflow.worker.outbox_worker import run_worker_loop
 
 logger = structlog.get_logger()
 
 
 async def main() -> int:
-    print("================================================================================")
-    print("      TASKFLOW OUTBOX DELIVERY WORKER DAEMON — ACTIVE")
-    print("================================================================================")
-    print("Polling database outbox for queued outbound replies every 1.0s...")
+    # The worker never retrieves, so it skips loading the embedding models.
+    async with runtime(with_vector_store=False) as rt:
+        if not await rt.email_channel.health():
+            print(
+                "SMTP is not configured (GMAIL_USER / GMAIL_APP_PASSWORD are unset).\n"
+                "The worker would mark every message DEAD. Configure .env and retry.",
+                file=sys.stderr,
+            )
+            return 2
 
-    db_url = "sqlite+aiosqlite:///./data/taskflow.db"
-    engine = build_engine(db_url)
-    factory = build_session_factory(engine)
-    outbox_repo = SQLiteOutboxRepository(factory)
-
-    try:
-        await run_worker_loop(outbox_repo, poll_interval_s=1.0)
-    except KeyboardInterrupt:
-        print("\nWorker daemon stopped by user.")
-    finally:
-        await engine.dispose()
+        print("TaskFlow outbox delivery worker — running. Ctrl-C to stop.")
+        try:
+            await run_worker_loop(rt.outbox_repo, rt.email_channel)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            print("\nWorker stopped.")
 
     return 0
 

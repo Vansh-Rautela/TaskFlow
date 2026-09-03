@@ -1,22 +1,19 @@
 """Heading-aware Markdown chunking.
 
-Splits markdown text on section boundaries (##), ensuring chunks remain
-coherent. Generates deterministic IDs for idempotent ingestion.
+Splits a document on section boundaries, keeping chunks coherent and anchored to the
+heading they came from. Chunk ids are derived from the document id, so re-ingesting
+an unchanged document produces the same ids and the upsert is a no-op.
 """
 
 import hashlib
 from collections.abc import Iterator
-from dataclasses import dataclass
 
+from taskflow.domain.models import DocumentChunk
 
-@dataclass(frozen=True)
-class DocumentChunk:
-    chunk_id: str
-    doc_id: str
-    title: str
-    section_heading: str | None
-    text: str
-    ordinal: int
+__all__ = ["DocumentChunk", "generate_doc_id", "split_document"]
+
+# A word is roughly 0.75 tokens, so a token budget converts to a word budget by *0.75.
+_WORDS_PER_TOKEN = 0.75
 
 
 def generate_doc_id(relpath: str, title: str) -> str:
@@ -25,87 +22,76 @@ def generate_doc_id(relpath: str, title: str) -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def split_document(
-    relpath: str, title: str, markdown_content: str, max_tokens: int = 450, overlap: int = 60
-) -> Iterator[DocumentChunk]:
-    """Split markdown into roughly `max_tokens` sized chunks, anchored to headings.
+def _tail_overlap(lines: list[str], budget_words: int) -> tuple[list[str], int]:
+    """The trailing lines of a finished chunk that should open the next one.
 
-    Using a naive word proxy for tokens (1 token ~= 0.75 words, so max_tokens 450 ~= 330 words).
+    Walks backwards while the budget allows. A single line longer than the whole
+    budget yields no overlap rather than blowing through it.
     """
-    doc_id = generate_doc_id(relpath, title)
+    kept: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        words = len(line.split())
+        if used + words > budget_words:
+            break
+        kept.insert(0, line)
+        used += words
+    return kept, used
 
-    # Very naive parsing: split by lines, look for headings.
-    lines = markdown_content.splitlines()
 
-    current_heading = None
-    current_chunk_lines: list[str] = []
-    current_word_count = 0
+def split_document(
+    relpath: str,
+    title: str,
+    markdown_content: str,
+    max_tokens: int = 450,
+    overlap: int = 60,
+    doc_id: str | None = None,
+) -> Iterator[DocumentChunk]:
+    """Split markdown into roughly `max_tokens`-sized chunks, anchored to headings.
 
+    `doc_id` overrides the path-derived id — knowledge-base documents declare their
+    own in frontmatter, and the evaluation corpora reference that id.
+    """
+    doc_id = doc_id or generate_doc_id(relpath, title)
+    max_words = int(max_tokens * _WORDS_PER_TOKEN)
+    overlap_words = int(overlap * _WORDS_PER_TOKEN)
+
+    heading: str | None = None
+    lines_buffer: list[str] = []
+    word_count = 0
     ordinal = 0
-    max_words = int(max_tokens * 0.75)
-    overlap_words = int(overlap * 0.75)
 
-    def _yield_chunk(text: str, heading: str | None, ord_num: int) -> DocumentChunk:
+    def _emit(ord_num: int) -> DocumentChunk:
         return DocumentChunk(
             chunk_id=f"{doc_id}:{ord_num}",
             doc_id=doc_id,
             title=title,
             section_heading=heading,
-            text=text.strip(),
+            text="\n".join(lines_buffer).strip(),
             ordinal=ord_num,
         )
 
-    for line in lines:
+    for line in markdown_content.splitlines():
         is_heading = line.startswith("#")
 
+        # A section boundary closes the current chunk once it holds enough to stand
+        # alone; below that, the new section joins it rather than leaving a stub.
         if is_heading:
-            header_level = len(line) - len(line.lstrip("#"))
-            # If it's a section heading (## or deeper), we might want to start a new chunk
-            # if the current chunk is getting large.
-            if header_level >= 2 and current_word_count > (max_words // 2) and current_chunk_lines:
-                text = "\n".join(current_chunk_lines)
-                yield _yield_chunk(text, current_heading, ordinal)
+            level = len(line) - len(line.lstrip("#"))
+            if level >= 2 and word_count > (max_words // 2) and lines_buffer:
+                yield _emit(ordinal)
                 ordinal += 1
+                lines_buffer, word_count = _tail_overlap(lines_buffer, overlap_words)
+            heading = line.lstrip("# ").strip()
 
-                # Compute overlap (keep last few lines)
-                overlap_lines: list[str] = []
-                overlap_count = 0
-                for prev_line in reversed(current_chunk_lines):
-                    words_in_line = len(prev_line.split())
-                    if overlap_count + words_in_line > overlap_words:
-                        break
-                    overlap_lines.insert(0, prev_line)
-                    overlap_count += words_in_line
+        lines_buffer.append(line)
+        word_count += len(line.split())
 
-                current_chunk_lines = overlap_lines
-                current_word_count = overlap_count
-
-            current_heading = line.lstrip("# ").strip()
-
-        words = line.split()
-        current_chunk_lines.append(line)
-        current_word_count += len(words)
-
-        # Force split if it gets too large regardless of headings
-        if current_word_count >= max_words:
-            text = "\n".join(current_chunk_lines)
-            yield _yield_chunk(text, current_heading, ordinal)
+        # Hard cap: split regardless of where the headings fall.
+        if word_count >= max_words:
+            yield _emit(ordinal)
             ordinal += 1
+            lines_buffer, word_count = _tail_overlap(lines_buffer, overlap_words)
 
-            overlap_lines = []
-            overlap_count = 0
-            for prev_line in reversed(current_chunk_lines):
-                words_in_line = len(prev_line.split())
-                if overlap_count + words_in_line > overlap_words:
-                    break
-                overlap_lines.insert(0, prev_line)
-                overlap_count += words_in_line
-
-            current_chunk_lines = overlap_lines
-            current_word_count = overlap_count
-
-    # Yield remaining
-    if current_chunk_lines:
-        text = "\n".join(current_chunk_lines).strip()
-        if text:
-            yield _yield_chunk(text, current_heading, ordinal)
+    if lines_buffer and "\n".join(lines_buffer).strip():
+        yield _emit(ordinal)

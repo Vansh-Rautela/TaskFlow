@@ -33,7 +33,7 @@ ESCALATED — critical policy: refund_ceiling          ← the answer, in the he
 
 ▸ 1 Classification    intent=refund (0.93), threshold 0.55, model clf-20260903-1412
                       probability bar chart across all intents
-▸ 2 Retrieval         table: chunk_id · title · dense · sparse · rrf · rerank
+▸ 2 Retrieval         table: chunk_id · title · rrf · rerank
                       sufficient=True, top=0.71, support=3
 ▸ 3 Generation        the DraftOutput JSON, prompt hash, model, tokens, latency
                       caption: draft_confidence 0.91 — logged only, never routed on

@@ -1,7 +1,8 @@
-"""The seven deterministic safety gates.
+"""The eight deterministic safety gates.
 
-Conjunctive, veto-only policy checkers. Any gate failure routes the message
-to HUMAN_REVIEW or throws an error if fatal.
+Conjunctive and veto-only: any failure routes the message to HUMAN_REVIEW. Gates are
+evaluated before the weighted score and are never expressed as a weight — a safety
+signal that can be compensated for is not a safety signal (ADR-001).
 """
 
 from taskflow.domain.enums import PREEMPT_INTENTS, GateId, Intent, Severity
@@ -16,8 +17,9 @@ def evaluate_gates(
     violations: list[PolicyViolation],
     citations_resolve: bool,
     suspicious_context: bool,
+    draft_is_model_generated: bool = True,
 ) -> list[GateResult]:
-    """Evaluate all safety gates. Returns a list of GateResults."""
+    """Evaluate all safety gates. Returns one GateResult per gate."""
     results = []
 
     # G1: Critical policy violations block auto-send
@@ -88,6 +90,20 @@ def evaluate_gates(
             gate_id=GateId.G7_INJECTION,
             passed=not suspicious_context,
             reason="Suspicious context detected" if suspicious_context else "Clear",
+        )
+    )
+
+    # G8: A model actually wrote this draft.
+    # When every provider fails, drafting returns a holding template. That template
+    # is a placeholder, not an answer, and must never be auto-sent as though a model
+    # had addressed the customer's question.
+    results.append(
+        GateResult(
+            gate_id=GateId.G8_DRAFT_SOURCE,
+            passed=draft_is_model_generated,
+            reason="Draft is a template fallback; no provider produced a reply"
+            if not draft_is_model_generated
+            else "Clear",
         )
     )
 

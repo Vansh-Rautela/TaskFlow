@@ -1,11 +1,11 @@
 """The state object passed down the pipeline.
 
-Must be frozen. Stages mutate by creating a new copy via replace().
-This eliminates an entire class of 'who mutated my state' bugs.
+Frozen. Stages advance it by producing a new copy via `replace()`, which removes an
+entire class of "who mutated my state" bug.
 """
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any
 
 from taskflow.domain.enums import Intent
 from taskflow.domain.models import (
@@ -31,10 +31,6 @@ class PipelineState:
     confidence: ConfidenceBreakdown | None = None
     decision: RoutingDecision | None = None
 
-    # Store dynamic threshold configurations mapped per intent
-    thresholds: Mapping[str, float] | None = None  # Expected to be populated inside pipeline
-
-    def replace(self, **kwargs) -> "PipelineState":
-        from dataclasses import replace
-
+    def replace(self, **kwargs: Any) -> "PipelineState":
+        """Return a copy with the given fields changed."""
         return replace(self, **kwargs)

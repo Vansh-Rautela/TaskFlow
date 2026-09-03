@@ -3,7 +3,7 @@
 ## Runtime: two processes, zero servers
 
 ```
-uv run uvicorn taskflow.api.main:app --port 8000     # API + web chat + 4 background loops
+uv run uvicorn taskflow.api.app:app --port 8000      # API (workers and pollers are separate processes: make worker / poller / sla)
 uv run streamlit run src/taskflow/dashboard/app.py   # review queue + trace viewer
 ```
 
@@ -52,9 +52,9 @@ inbox row
   → thread/state load
   → FAQ fast path                → template reply, 0 LLM calls
   → classify intent              → complaint/unknown/abstain → human review
-  → build query (deterministic: thread context + alias expansion)
-  → Qdrant: dense + BM25 → RRF   (one call)
-  → cross-encoder rerank → top 5
+  → build query (deterministic: normalise + alias expansion)
+  → Qdrant: dense + BM25 → RRF   (one call, top 20)
+  → cross-encoder rerank → top 5 (scored on the customer's raw words)
   → sufficiency check            → insufficient → log gap → human review
   → draft                        (LLM call 1: Claude → Ollama)
   → validators, asyncio.gather   (4 deterministic + LLM call 2: grounding)
@@ -112,7 +112,7 @@ One SQLite file, WAL mode, single writer (the API process), read-only readers (S
 | `outbox` | send-once delivery, `UNIQUE(idempotency_key)` |
 | `audit` | append-only record of every action |
 | `llm_calls` | cost and latency per call |
-| `alerts` | fallback alert channel when Teams is unavailable |
+| `alerts` | email, Telegram and generic-webhook dispatch; each enabled by its own credential. Teams was never implemented (ADR-008) |
 
 Vectors live in embedded Qdrant, not SQLite: one collection, named vectors `dense` (384d
 cosine) and `bm25` (sparse, IDF modifier), payload-indexed on `tenant_id`, `doc_type`,

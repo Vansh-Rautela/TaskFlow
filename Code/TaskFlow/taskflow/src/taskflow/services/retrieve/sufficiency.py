@@ -1,7 +1,13 @@
-"""Sufficiency evaluation service for Phase P5.
+"""Sufficiency evaluation.
 
-Evaluates whether retrieved chunks contain sufficient evidence to generate a reliable draft,
-or if the message should escalate due to a retrieval gap.
+Decides whether the retrieved chunks are enough evidence to draft from, or whether
+the message should escalate on a retrieval gap.
+
+The check is only as meaningful as the score it reads. `ScoredChunk.final_score` is
+the reranker's calibrated relevance when a reranker ran, and an RRF rank score when
+one did not. RRF encodes rank position only — its top value is the same whether the
+best candidate was a perfect answer or the least bad of twenty irrelevant ones — so
+without reranking no threshold on it can separate a good retrieval from a bad one.
 """
 
 from taskflow.config.settings import thresholds_config
@@ -11,13 +17,13 @@ from taskflow.domain.models import ScoredChunk
 def evaluate_sufficiency(
     chunks: list[ScoredChunk],
 ) -> tuple[bool, str | None, float, int]:
-    """Evaluate retrieval sufficiency based on thresholds in thresholds.yaml.
+    """Evaluate retrieval sufficiency against the thresholds in thresholds.yaml.
 
     Returns:
         (sufficient, gap_reason, top_score, support_count)
     """
     cfg = thresholds_config().get("retrieval", {})
-    min_top_score = float(cfg.get("min_top_score", 0.35))
+    min_top_score = float(cfg.get("min_top_score", 0.55))
     min_support_score = float(cfg.get("min_support_score", 0.20))
     min_support_count = int(cfg.get("min_support_count", 2))
 

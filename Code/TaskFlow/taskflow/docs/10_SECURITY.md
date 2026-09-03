@@ -41,7 +41,7 @@ unlimited."*
    scanned for instruction-like patterns (`ignore previous`, `system:`, `you must now`,
    `disregard`), and a match sets `suspicious_context` → gate G7 → human review.
 4. **The model cannot act.** No tools, no send capability, no database access. Its entire
-   output is a JSON object that then has to pass seven gates.
+   output is a JSON object that then has to pass eight gates.
    **Compromising the model does not compromise the system** — say this sentence out loud.
 5. **Citations must resolve.** Gate G3 requires every citation to point at a chunk actually
    retrieved in this run. Fabricated support fails mechanically.

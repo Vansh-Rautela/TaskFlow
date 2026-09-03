@@ -49,7 +49,12 @@ rules:
 
   - id: pricing_accuracy
     severity: warning
-    detect: {type: price_mismatch, known: {pro: 12, enterprise: 29}}
+    # KB-PRICING-001 (Plan Tiers Overview): Pro is $24/user/mo monthly, $20/user/mo
+    # effective annual — this catches the monthly quote, the one the KB leads with.
+    # Enterprise intentionally has no entry: KB-PRICING-001 states its pricing is
+    # per-agreement and explicitly "never invent a universal price," so a fixed
+    # reference number here would itself be the thing this rule exists to prevent.
+    detect: {type: price_mismatch, known: {pro: 24}}
     message: "Quoted price does not match the current price list."
 
   - id: no_security_details

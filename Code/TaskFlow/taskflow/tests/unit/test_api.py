@@ -1,153 +1,177 @@
-"""Unit tests for Phase P9 FastAPI REST API endpoints."""
+"""API tests.
 
-from datetime import UTC, datetime, timedelta
+The API is transport: authenticate, validate, delegate, serialise. These tests cover
+that contract, not the pipeline behind it.
+"""
 
 import pytest
 from fastapi.testclient import TestClient
 
-from taskflow.adapters.db.engine import build_engine, build_session_factory
-from taskflow.adapters.db.orm import Base
-from taskflow.adapters.db.repositories import (
-    SQLiteOutboxRepository,
-    SQLiteReviewRepository,
-    SQLiteTraceRepository,
-)
-from taskflow.adapters.vector.qdrant_store import QdrantVectorStore
-from taskflow.api.app import app, deps_container
-from taskflow.domain.enums import ReviewState, RouteAction
-from taskflow.domain.models import (
-    ConfidenceBreakdown,
-    DraftOutput,
-    ReviewItem,
-    RoutingDecision,
-)
-from taskflow.pipeline.orchestrator import Deps
-from tests.unit.test_providers import MockSuccessProvider
+from taskflow.api.app import app
 
 
 @pytest.fixture
-async def api_deps():
-    engine = build_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+def client(tmp_path, monkeypatch):
+    """A client against a real migrated database, with the LLM and vector store faked."""
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/api.db")
+    from taskflow.config import settings as settings_module
 
-    factory = build_session_factory(engine)
-    trace_repo = SQLiteTraceRepository(factory)
-    review_repo = SQLiteReviewRepository(factory)
-    outbox_repo = SQLiteOutboxRepository(factory)
+    settings_module.settings.cache_clear()
 
-    mock_p = MockSuccessProvider()
-    from taskflow.adapters.llm.router import ProviderRouter
+    from taskflow.domain.enums import Intent
+    from taskflow.domain.models import Citation, ClassificationOutput, DraftOutput
+    from tests.fixtures.fakes import FakeLLMRouter, FakeReranker, FakeVectorStore, chunk
 
-    router = ProviderRouter(providers={"claude": mock_p, "ollama": mock_p})
-    vector_store = QdrantVectorStore(location=":memory:")
-    vector_store.setup_collection()
-
-    deps = Deps(
-        trace_repo=trace_repo,
-        llm_router=router,
-        vector_store=vector_store,
+    text = "Refunds are prorated for unused seat licenses on annual plans."
+    fake_router = FakeLLMRouter(
+        responses={
+            "classification": ClassificationOutput(
+                intent=Intent.BILLING, confidence=0.95, reasoning="billing"
+            ),
+            "draft": DraftOutput(
+                response_text=f"I am sorry for the confusion. {text} [kb:0]",
+                citations=[Citation(chunk_id="kb:0", doc_title="Refunds")],
+                tone="apologetic",
+                complexity="simple",
+                draft_confidence=0.9,
+            ),
+        }
+    )
+    fake_store = FakeVectorStore(
+        chunks=[chunk("kb:0", text), chunk("kb:1", "Requests must be filed within 30 days.")],
+        scores=[0.85, 0.6],
     )
 
-    deps_container["deps"] = deps
-    deps_container["trace_repo"] = trace_repo
-    deps_container["review_repo"] = review_repo
-    deps_container["outbox_repo"] = outbox_repo
-    deps_container["engine"] = engine
+    # The API builds itself through the composition root, so that is where the
+    # adapters are swapped — one seam instead of one per entrypoint.
+    fake_reranker = FakeReranker({"kb:0": 0.85, "kb:1": 0.60})
+    monkeypatch.setattr("taskflow.bootstrap.ProviderRouter", lambda *a, **k: fake_router)
+    monkeypatch.setattr("taskflow.bootstrap.QdrantVectorStore", lambda *a, **k: fake_store)
+    monkeypatch.setattr("taskflow.bootstrap.CrossEncoderReranker", lambda *a, **k: fake_reranker)
 
-    yield deps
+    with TestClient(app) as c:
+        c.fake_router = fake_router
+        yield c
 
-    await engine.dispose()
-
-
-def test_healthz_endpoint():
-    """Health check endpoint returns 200 OK."""
-    client = TestClient(app)
-    response = client.get("/healthz")
-    assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    settings_module.settings.cache_clear()
 
 
-@pytest.mark.asyncio
-async def test_ingest_message_api(api_deps):
-    """POST /messages ingests inbound message and returns routing decision."""
-    client = TestClient(app)
-    payload = {
-        "message_id": "api-msg-001",
-        "tenant_id": "test-tenant",
-        "channel": "console",
-        "sender": "user@example.com",
-        "subject": "Need help with API error",
-        "body_text": "API returning 500 internal server error",
+def _message(message_id: str = "api-1") -> dict:
+    return {
+        "message_id": message_id,
+        "tenant_id": "taskflow-demo",
+        "channel": "email",
+        "sender": "customer@example.com",
+        "subject": "Billing question",
+        "body_text": "I was double charged on my invoice this month.",
     }
-    response = client.post("/messages", json=payload)
-    assert response.status_code == 200
-    data = response.json()
-    assert data["message_id"] == "api-msg-001"
-    assert "action" in data
 
 
-@pytest.mark.asyncio
-async def test_list_traces_api(api_deps):
-    """GET /traces returns recent execution traces."""
-    client = TestClient(app)
-    response = client.get("/traces")
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
+# ---------- open endpoints ----------
 
 
-@pytest.mark.asyncio
-async def test_list_and_approve_review_api(api_deps):
-    """GET /reviews returns pending items and POST /reviews/{id}/approve approves."""
-    client = TestClient(app)
-    review_repo = deps_container["review_repo"]
-
-    now = datetime.now(UTC)
-    item = ReviewItem(
-        review_id="rev-api-1",
-        trace_id="tr-api-1",
-        conversation_id="c-api-1",
-        tenant_id="test",
-        state=ReviewState.PENDING,
-        draft=DraftOutput(
-            response_text="Draft text [chunk-001].",
-            citations=[],
-            tone="friendly",
-            complexity="simple",
-            draft_confidence=0.8,
-        ),
-        decision=RoutingDecision(
-            action=RouteAction.HUMAN_REVIEW,
-            reason="Low confidence",
-            reason_code="low_confidence",
-            confidence=ConfidenceBreakdown(gates=[], weights={}, score=0.6, threshold=0.7),
-        ),
-        created_at=now,
-        sla_deadline=now + timedelta(hours=4),
-    )
-    await review_repo.create(item)
-
-    # Test list reviews endpoint
-    list_resp = client.get("/reviews")
-    assert list_resp.status_code == 200
-    items = list_resp.json()
-    assert len(items) == 1
-    assert items[0]["review_id"] == "rev-api-1"
-
-    # Test approve review endpoint
-    appr_resp = client.post(
-        "/reviews/rev-api-1/approve", json={"operator": "admin", "reason": "looks good"}
-    )
-    assert appr_resp.status_code == 200
-    assert appr_resp.json()["status"] == "approved"
+def test_root_is_open(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    assert res.json()["service"].startswith("TaskFlow")
 
 
-@pytest.mark.asyncio
-async def test_metrics_api(api_deps):
-    """GET /metrics returns system performance & cost summary."""
-    client = TestClient(app)
-    response = client.get("/metrics")
-    assert response.status_code == 200
-    data = response.json()
-    assert "total_traces" in data
-    assert "auto_send_rate_pct" in data
+def test_healthz_is_open(client):
+    assert client.get("/healthz").json() == {"status": "ok", "service": "taskflow-api"}
+
+
+# ---------- authentication ----------
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("post", "/messages"),
+        ("get", "/traces"),
+        ("get", "/reviews"),
+        ("get", "/metrics"),
+        ("post", "/reviews/rev-1/approve"),
+        ("post", "/reviews/rev-1/reject"),
+    ],
+)
+def test_protected_endpoints_reject_anonymous_requests(client, method, path):
+    """TASKFLOW_API_TOKEN was a configured setting that no endpoint enforced."""
+    kwargs = {"json": {}} if method == "post" else {}
+    res = getattr(client, method)(path, **kwargs)
+    assert res.status_code == 401, f"{method.upper()} {path} served an unauthenticated request"
+
+
+def test_wrong_token_is_rejected(client):
+    res = client.get("/traces", headers={"Authorization": "Bearer not-the-token"})
+    assert res.status_code == 401
+
+
+# ---------- ingestion ----------
+
+
+def test_ingest_returns_the_decision(client, auth_headers):
+    res = client.post("/messages", json=_message(), headers=auth_headers)
+    assert res.status_code == 200
+
+    body = res.json()
+    assert body["action"] in {"auto_send", "human_review"}
+    assert body["reason_code"]
+    assert body["threshold"] == pytest.approx(0.80), "billing must be judged at its own threshold"
+
+
+def test_ingest_rejects_an_empty_body(client, auth_headers):
+    payload = _message() | {"body_text": ""}
+    assert client.post("/messages", json=payload, headers=auth_headers).status_code == 422
+
+
+def test_duplicate_ingest_is_dropped(client, auth_headers):
+    first = client.post("/messages", json=_message("dup-x"), headers=auth_headers).json()
+    second = client.post("/messages", json=_message("dup-x"), headers=auth_headers).json()
+
+    assert first["action"] != "dropped_duplicate"
+    assert second["action"] == "dropped_duplicate"
+
+
+def test_client_cannot_supply_body_redacted(client, auth_headers):
+    """Redaction is the pipeline's job; a client must not be able to pre-empt it."""
+    payload = _message("no-inject") | {"body_redacted": "clean"}
+    res = client.post("/messages", json=payload, headers=auth_headers)
+    assert res.status_code == 200
+
+    trace = client.get("/traces", headers=auth_headers).json()[0]
+    assert trace["intent"] is not None
+
+
+# ---------- traces and metrics ----------
+
+
+def test_trace_records_the_decision(client, auth_headers):
+    client.post("/messages", json=_message("trace-1"), headers=auth_headers)
+
+    traces = client.get("/traces", headers=auth_headers).json()
+    assert len(traces) == 1
+
+    detail = client.get(f"/traces/{traces[0]['trace_id']}", headers=auth_headers).json()
+    assert detail["decision"]["reason_code"]
+    assert detail["confidence"]["threshold"] == pytest.approx(0.80)
+    assert detail["draft"]["response_text"]
+
+
+def test_unknown_trace_is_404(client, auth_headers):
+    assert client.get("/traces/nope", headers=auth_headers).status_code == 404
+
+
+def test_metrics_are_derived_from_traces(client, auth_headers):
+    for i in range(3):
+        client.post("/messages", json=_message(f"metric-{i}"), headers=auth_headers)
+
+    m = client.get("/metrics", headers=auth_headers).json()
+    assert m["total_traces"] == 3
+    assert sum(m["actions_breakdown"].values()) == m["decided_traces"]
+    assert m["auto_send_rate_pct"] + m["human_review_rate_pct"] == pytest.approx(100.0)
+    assert m["intents_breakdown"] == {"billing": 3}
+
+
+def test_actioning_a_missing_review_is_409(client, auth_headers):
+    res = client.post("/reviews/rev-missing/approve", json={}, headers=auth_headers)
+    assert res.status_code == 409

@@ -28,6 +28,7 @@ from taskflow.adapters.db.repositories import (
 )
 from taskflow.domain.enums import Channel, OutboxState, ReviewState, RouteAction
 from taskflow.domain.models import (
+    EditRecord,
     InboundMessage,
     OutboundMessage,
     ReviewItem,
@@ -255,6 +256,52 @@ async def test_review_pending_list(factory):
     assert pending_after[0].review_id == r2.review_id
 
 
+@pytest.mark.asyncio
+async def test_review_all_returns_every_state(factory):
+    """all() is for offline analysis (scripts/calibrate_confidence.py) — unlike
+    pending(), it must not filter by state."""
+    repo = SQLiteReviewRepository(factory)
+    r1, r2, r3 = _make_review(), _make_review(), _make_review()
+    for r in (r1, r2, r3):
+        await repo.create(r)
+    await repo.transition(r1.review_id, ReviewState.APPROVED, ReviewState.PENDING)
+    await repo.transition(r2.review_id, ReviewState.REJECTED, ReviewState.PENDING)
+
+    all_items = await repo.all()
+
+    assert len(all_items) == 3
+    states = {item.review_id: item.state for item in all_items}
+    assert states[r1.review_id] == ReviewState.APPROVED
+    assert states[r2.review_id] == ReviewState.REJECTED
+    assert states[r3.review_id] == ReviewState.PENDING
+
+
+@pytest.mark.asyncio
+async def test_review_edits_for_round_trips(factory):
+    repo = SQLiteReviewRepository(factory)
+    item = _make_review()
+    await repo.create(item)
+
+    assert await repo.edits_for(item.review_id) == []
+
+    edit = EditRecord(
+        review_id=item.review_id,
+        original_draft="Thanks, we'll process that.",
+        edited_draft="Thanks, we'll process that refund within 5 business days.",
+        editor="operator_admin",
+        edited_at=_utcnow(),
+        reason="clarified timeline",
+        char_diff=27,
+    )
+    await repo.record_edit(edit)
+
+    fetched = await repo.edits_for(item.review_id)
+    assert len(fetched) == 1
+    assert fetched[0].original_draft == edit.original_draft
+    assert fetched[0].edited_draft == edit.edited_draft
+    assert fetched[0].char_diff == 27
+
+
 # ---------- Trace tests ----------
 
 
@@ -271,6 +318,69 @@ async def test_trace_start_and_get(factory):
     fetched = await repo.get(trace.trace_id)
     assert fetched is not None
     assert fetched.trace_id == trace.trace_id
+
+
+@pytest.mark.asyncio
+async def test_trace_reads_back_a_row_written_before_fields_were_removed(factory):
+    """A trace row is a historical record and outlives the shape it was written in.
+
+    `Chunk` used to carry doc_type / product_tier / intents and `ScoredChunk` used to
+    carry dense_score / sparse_score. The models forbid extras, so a row written before
+    those were removed used to raise a ValidationError on read — which took `preflight`
+    and the dashboard down with it.
+    """
+    from sqlalchemy import update as sa_update
+
+    from taskflow.adapters.db.orm import TraceRow
+
+    repo = SQLiteTraceRepository(factory)
+    trace = await repo.start(_make_inbound())
+
+    legacy = {
+        "query_used": "prorated refund",
+        "sufficient": True,
+        "latency_ms": 41,
+        "top_score": 0.83,
+        "support_count": 2,
+        "chunks": [
+            {
+                "chunk": {
+                    "chunk_id": "KB-REFUND-001:2",
+                    "doc_id": "KB-REFUND-001",
+                    "title": "Refunds",
+                    "section": "Prorated",
+                    "text": "Credits are prorated.",
+                    "doc_type": "policy",  # removed from Chunk
+                    "product_tier": None,  # removed from Chunk
+                    "intents": [],  # removed from Chunk
+                    "version": "1.0",
+                    "source_path": "",
+                    "tenant_id": "test",
+                },
+                "dense_score": None,  # removed from ScoredChunk
+                "sparse_score": None,  # removed from ScoredChunk
+                "rrf_score": 0.83,
+                "rerank_score": None,
+            }
+        ],
+    }
+
+    async with factory() as session:
+        await session.execute(
+            sa_update(TraceRow)
+            .where(TraceRow.trace_id == trace.trace_id)
+            .values(retrieval_json=legacy)
+        )
+        await session.commit()
+
+    fetched = await repo.get(trace.trace_id)
+
+    assert fetched is not None
+    assert fetched.retrieval is not None
+    assert fetched.retrieval.top_score == 0.83
+    assert len(fetched.retrieval.chunks) == 1
+    assert fetched.retrieval.chunks[0].chunk.chunk_id == "KB-REFUND-001:2"
+    assert fetched.retrieval.chunks[0].rrf_score == 0.83
 
 
 @pytest.mark.asyncio

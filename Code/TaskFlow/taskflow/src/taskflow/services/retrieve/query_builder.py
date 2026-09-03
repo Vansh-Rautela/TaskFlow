@@ -1,29 +1,31 @@
-"""Query builder service for Phase P5.
+"""Query building.
 
-Applies deterministic normalization and alias expansion configured in config/settings.yaml
-to improve dense and sparse keyword retrieval recall.
+Deterministic normalisation plus the alias expansions configured in
+config/settings.yaml. No LLM: a query rewrite that cannot be reproduced from the
+config file cannot be explained on a trace.
+
+The expansion is a recall aid for the lexical and embedding branches. It is not
+applied to the reranker, which reads the customer's own words — see
+`services.retrieve.service`.
 """
 
 import re
 
-from taskflow.config.settings import app_config
+from taskflow.config.settings import retrieval_config
 
 
 def build_query(text: str) -> str:
-    """Build an expanded query string using configured alias mappings."""
+    """Return the normalised query, with any configured aliases appended."""
     if not text or not text.strip():
         return ""
 
     normalized = text.strip().lower()
-    expansions = app_config().get("retrieval", {}).get("alias_expansions", {})
+    expansions = retrieval_config().get("alias_expansions", {})
 
-    expanded_terms = []
-    for alias, expansion in expansions.items():
-        pattern = re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE)
-        if pattern.search(normalized):
-            expanded_terms.append(str(expansion))
+    matched = [
+        str(expansion)
+        for alias, expansion in expansions.items()
+        if re.search(rf"\b{re.escape(alias)}\b", normalized, re.IGNORECASE)
+    ]
 
-    if expanded_terms:
-        return f"{normalized} ({' '.join(expanded_terms)})"
-
-    return normalized
+    return f"{normalized} {' '.join(matched)}" if matched else normalized

@@ -4,11 +4,12 @@ import pytest
 from pydantic import BaseModel
 
 from taskflow.adapters.llm.router import ProviderRouter
+from taskflow.config.settings import thresholds_config
 from taskflow.domain.enums import Intent
 from taskflow.domain.errors import ProviderError
 from taskflow.domain.models import ClassificationOutput, LLMCall
 from taskflow.ports.llm import LLMResponse, ProviderCapabilities
-from taskflow.services.classify.service import classify_intent
+from taskflow.services.classify.service import build_system_prompt, classify_intent
 
 
 class MockClassifierProvider:
@@ -73,9 +74,55 @@ async def test_structured_llm_classification(monkeypatch):
 @pytest.mark.asyncio
 async def test_fallback_classification():
     """Keyword fallback classification when router is None."""
-    intent, confidence, _call = await classify_intent("Can I get a refund?", router=None)
+    intent, confidence, call = await classify_intent("Can I get a refund?", router=None)
     assert intent == Intent.REFUND
-    assert confidence == 0.95
+    assert confidence == thresholds_config()["fallback_confidences"]["refund"]
+    assert call is None, "the keyword path makes no LLM call and must not report one"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_routes_to_account_not_refund():
+    """Regression for BRD R-2/§15.
+
+    There is no `cancellation` intent in the 8-intent taxonomy. Asking to close an
+    account is not asking for money back, and the keyword classifier used to answer
+    every cancellation with REFUND.
+    """
+    for text in (
+        "Please cancel my subscription",
+        "I want to close my account",
+        "Please erase my data and close account",
+    ):
+        intent, _conf, _call = await classify_intent(text, router=None)
+        assert intent == Intent.ACCOUNT, f"{text!r} classified as {intent}"
+
+
+@pytest.mark.asyncio
+async def test_prompt_enumerates_exactly_the_intent_enum():
+    """BRD FR-3.6. The prompt used to list `cancellation` and `enterprise`, which are
+    not `Intent` members, so those labels failed validation and silently degraded to
+    the keyword classifier."""
+    prompt = build_system_prompt()
+    for intent in Intent:
+        assert f"- {intent.value}:" in prompt, f"{intent.value} missing from the prompt"
+
+    listed = {
+        line.split(":")[0].removeprefix("- ").strip()
+        for line in prompt.splitlines()
+        if line.startswith("- ")
+    }
+    assert listed == {i.value for i in Intent}, "prompt and Intent enum have drifted apart"
+
+
+@pytest.mark.asyncio
+async def test_fallback_confidence_never_exceeds_a_confident_llm():
+    """A keyword match is weak evidence. It must not be stamped with a confidence
+    that sails past the G5 abstain gate as though the classifier were sure."""
+    confidences = thresholds_config()["fallback_confidences"]
+    for key, value in confidences.items():
+        if key == "draft":
+            continue
+        assert value <= 0.80, f"fallback confidence {key}={value} is overconfident"
 
 
 @pytest.mark.asyncio
@@ -90,7 +137,7 @@ async def test_fallback_on_all_providers_failed(monkeypatch):
     )
 
     assert intent == Intent.BILLING
-    assert confidence == 0.90
+    assert confidence == thresholds_config()["fallback_confidences"]["billing"]
 
 
 @pytest.mark.asyncio

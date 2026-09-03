@@ -23,8 +23,6 @@ class ClaudeProvider:
         supports_json_schema=True,
         supports_tools=True,
         max_context=200000,
-        price_in_per_1k=0.003,
-        price_out_per_1k=0.015,
     )
 
     def __init__(self, api_key: str | None = None) -> None:

@@ -13,14 +13,16 @@ Rules:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from pydantic import BaseModel
 from sqlalchemy import CursorResult, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from taskflow.adapters.db.orm import (
+    AuditRow,
     EditRecordRow,
     InboxRow,
     OutboxRow,
@@ -28,16 +30,22 @@ from taskflow.adapters.db.orm import (
     TraceEventRow,
     TraceRow,
 )
-from taskflow.domain.enums import Channel, OutboxState, ReviewState
+from taskflow.domain.enums import Channel, Intent, OutboxState, ReviewState
 from taskflow.domain.errors import DuplicateMessage
 from taskflow.domain.models import (
+    Chunk,
+    ConfidenceBreakdown,
+    DraftOutput,
     EditRecord,
     InboundMessage,
     LLMCall,
     OutboundMessage,
+    RetrievalResult,
     ReviewItem,
     RoutingDecision,
+    ScoredChunk,
     Trace,
+    ValidatorResult,
 )
 
 
@@ -45,86 +53,37 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-# ---------- Processed message (inbox deduplification) ----------
-
-
-class SQLiteProcessedMessageRepository:
-    """Satisfies ports.repositories.ProcessedMessageRepository."""
-
-    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
-        self._factory = factory
-
-    async def try_claim(self, dedupe_key: str) -> bool:
-        """Insert a row for dedupe_key.  Returns False if it already existed."""
-        async with self._factory() as session, session.begin():
-            try:
-                session.add(
-                    InboxRow(
-                        message_id="placeholder",  # will be overwritten by InboxRepository.save
-                        dedupe_key=dedupe_key,
-                        tenant_id="",
-                        channel="",
-                        sender="",
-                        body_text="",
-                        body_redacted="",
-                        provider_message_id="",
-                        provider_thread_headers={},
-                        received_at=_utcnow(),
-                    )
-                )
-                await session.flush()
-                return True
-            except IntegrityError:
-                return False
+# ---------- Inbox / deduplication ----------
 
 
 class SQLiteInboxRepository:
-    """Full inbox persistence. Satisfies no Protocol directly but used by the worker.
+    """Inbox persistence and deduplication.
 
-    NOTE: try_claim is the dedup gate — call it before save. If try_claim returns False,
-    raise DuplicateMessage and skip processing.
+    Satisfies ports.repositories.ProcessedMessageRepository.
+
+    `try_claim` is the deduplication gate and the only place a dedupe_key is
+    reserved. It relies on the UNIQUE constraint on `inbox.dedupe_key` rather than
+    SELECT-then-INSERT, so two workers racing on the same message cannot both win.
     """
 
     def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
         self._factory = factory
 
-    async def save(self, msg: InboundMessage) -> None:
-        row = InboxRow(
-            message_id=msg.message_id,
-            dedupe_key=msg.dedupe_key,
-            tenant_id=msg.tenant_id,
-            channel=msg.channel.value,
-            sender=msg.sender,
-            subject=msg.subject,
-            body_text=msg.body_text,
-            body_redacted=msg.body_redacted,
-            thread_ref=msg.thread_ref,
-            provider_message_id=msg.provider_message_id,
-            provider_thread_headers=msg.provider_thread_headers,
-            received_at=msg.received_at,
-            raw_ref=msg.raw_ref,
-        )
-        async with self._factory() as session, session.begin():
-            try:
-                session.add(row)
-            except IntegrityError as err:
-                raise DuplicateMessage(msg.dedupe_key) from err
-
     async def try_claim(self, dedupe_key: str) -> bool:
-        """Try to reserve a dedupe_key. Returns False if already seen."""
-        async with self._factory() as session, session.begin():
-            existing = await session.execute(
-                select(InboxRow.id).where(InboxRow.dedupe_key == dedupe_key).limit(1)
-            )
-            if existing.scalar() is not None:
-                return False
-            # Reserve the slot with minimal columns
+        """Reserve `dedupe_key`. Returns False if it was already taken.
+
+        The INSERT is committed inside its own transaction. On IntegrityError the
+        session is rolled back explicitly: leaving a failed flush to be committed by
+        the context manager raises on the way out and turns a duplicate — an ordinary
+        signal — into an exception.
+        """
+        async with self._factory() as session:
             session.add(
                 InboxRow(
                     message_id=f"pending:{uuid.uuid4().hex[:8]}",
                     dedupe_key=dedupe_key,
                     tenant_id="",
-                    channel="console",
+                    channel=Channel.CONSOLE.value,
                     sender="",
                     body_text="",
                     body_redacted="",
@@ -134,10 +93,69 @@ class SQLiteInboxRepository:
                 )
             )
             try:
-                await session.flush()
-                return True
+                await session.commit()
             except IntegrityError:
+                await session.rollback()
                 return False
+            return True
+
+    async def save(self, msg: InboundMessage) -> None:
+        """Fill in the row reserved by `try_claim` with the full message.
+
+        Raises DuplicateMessage if no reservation exists and the key is already used.
+        """
+        async with self._factory() as session:
+            values = {
+                "message_id": msg.message_id,
+                "tenant_id": msg.tenant_id,
+                "channel": msg.channel.value,
+                "sender": msg.sender,
+                "subject": msg.subject,
+                "body_text": msg.body_text,
+                "body_redacted": msg.body_redacted,
+                "thread_ref": msg.thread_ref,
+                "provider_message_id": msg.provider_message_id,
+                "provider_thread_headers": msg.provider_thread_headers,
+                "received_at": msg.received_at,
+                "raw_ref": msg.raw_ref,
+            }
+            result = cast(
+                CursorResult[Any],
+                await session.execute(
+                    update(InboxRow).where(InboxRow.dedupe_key == msg.dedupe_key).values(**values)
+                ),
+            )
+            if result.rowcount == 0:
+                session.add(InboxRow(dedupe_key=msg.dedupe_key, **values))
+            try:
+                await session.commit()
+            except IntegrityError as err:
+                await session.rollback()
+                raise DuplicateMessage(msg.dedupe_key) from err
+
+    async def get(self, dedupe_key: str) -> InboundMessage | None:
+        async with self._factory() as session:
+            result = await session.execute(
+                select(InboxRow).where(InboxRow.dedupe_key == dedupe_key).limit(1)
+            )
+            row = result.scalar_one_or_none()
+            if row is None or not row.message_id or row.message_id.startswith("pending:"):
+                return None
+            return InboundMessage(
+                message_id=row.message_id,
+                dedupe_key=row.dedupe_key,
+                tenant_id=row.tenant_id,
+                channel=Channel(row.channel),
+                sender=row.sender,
+                subject=row.subject,
+                body_text=row.body_text,
+                body_redacted=row.body_redacted,
+                thread_ref=row.thread_ref,
+                provider_message_id=row.provider_message_id,
+                provider_thread_headers=row.provider_thread_headers or {},
+                received_at=row.received_at,
+                raw_ref=row.raw_ref,
+            )
 
 
 # ---------- Trace repository ----------
@@ -245,16 +263,30 @@ class SQLiteTraceRepository:
             return [_row_to_trace(r) for r in result.scalars()]
 
 
-def _row_to_trace(row: TraceRow) -> Trace:
-    from taskflow.domain.enums import Channel, Intent
-    from taskflow.domain.models import (
-        ConfidenceBreakdown,
-        DraftOutput,
-        RetrievalResult,
-        RoutingDecision,
-        ValidatorResult,
-    )
+def _known_fields_only(model: type[BaseModel], data: dict[str, Any]) -> dict[str, Any]:
+    """Drop keys the model no longer declares."""
+    return {k: v for k, v in data.items() if k in model.model_fields}
 
+
+def _retrieval_from_json(data: dict[str, Any]) -> RetrievalResult:
+    """Rehydrate a stored retrieval payload against the *current* models.
+
+    A trace row is a historical record: one written before a field was removed still
+    carries that field, and the domain models forbid extras. Reconciling the stored
+    shape with the current one belongs here — the alternatives are keeping dead fields
+    on the models forever, or making them permissive for live data too.
+    """
+    chunks = []
+    for raw in data.get("chunks", []):
+        scored = _known_fields_only(ScoredChunk, raw)
+        if isinstance(scored.get("chunk"), dict):
+            scored["chunk"] = _known_fields_only(Chunk, scored["chunk"])
+        chunks.append(scored)
+
+    return RetrievalResult(**{**_known_fields_only(RetrievalResult, data), "chunks": chunks})
+
+
+def _row_to_trace(row: TraceRow) -> Trace:
     return Trace(
         trace_id=row.trace_id,
         conversation_id=row.conversation_id,
@@ -266,7 +298,7 @@ def _row_to_trace(row: TraceRow) -> Trace:
         intent=Intent(row.intent) if row.intent else None,
         intent_confidence=row.intent_confidence,
         classifier_version=row.classifier_version,
-        retrieval=RetrievalResult(**row.retrieval_json) if row.retrieval_json else None,
+        retrieval=_retrieval_from_json(row.retrieval_json) if row.retrieval_json else None,
         draft=DraftOutput(**row.draft_json) if row.draft_json else None,
         validators=[ValidatorResult(**v) for v in (row.validators_json or [])],
         confidence=ConfidenceBreakdown(**row.confidence_json) if row.confidence_json else None,
@@ -336,6 +368,13 @@ class SQLiteReviewRepository:
             )
             return [_row_to_review(r) for r in result.scalars()]
 
+    async def all(self, limit: int = 500) -> list[ReviewItem]:
+        async with self._factory() as session:
+            result = await session.execute(
+                select(ReviewRow).order_by(ReviewRow.created_at.desc()).limit(limit)
+            )
+            return [_row_to_review(r) for r in result.scalars()]
+
     async def transition(self, review_id: str, to: ReviewState, expected: ReviewState) -> bool:
         """Optimistic lock. Returns False if the expected state wasn't found."""
         async with self._factory() as session, session.begin():
@@ -354,9 +393,15 @@ class SQLiteReviewRepository:
             return bool(cursor.rowcount == 1)
 
     async def record_edit(self, edit: EditRecord) -> None:
+        async with self._factory() as session:
+            result = await session.execute(
+                select(ReviewRow.tenant_id).where(ReviewRow.review_id == edit.review_id).limit(1)
+            )
+            tenant_id = result.scalar() or ""
+
         row = EditRecordRow(
             review_id=edit.review_id,
-            tenant_id="",  # filled from review lookup if needed
+            tenant_id=tenant_id,
             original_draft=edit.original_draft,
             edited_draft=edit.edited_draft,
             editor=edit.editor,
@@ -366,6 +411,27 @@ class SQLiteReviewRepository:
         )
         async with self._factory() as session, session.begin():
             session.add(row)
+
+    async def edits_for(self, review_id: str) -> list[EditRecord]:
+        async with self._factory() as session:
+            result = await session.execute(
+                select(EditRecordRow)
+                .where(EditRecordRow.review_id == review_id)
+                .order_by(EditRecordRow.edited_at)
+            )
+            return [_row_to_edit_record(r) for r in result.scalars()]
+
+
+def _row_to_edit_record(row: EditRecordRow) -> EditRecord:
+    return EditRecord(
+        review_id=row.review_id,
+        original_draft=row.original_draft,
+        edited_draft=row.edited_draft,
+        editor=row.editor,
+        edited_at=row.edited_at,
+        reason=row.reason,
+        char_diff=row.char_diff,
+    )
 
 
 def _row_to_review(row: ReviewRow) -> ReviewItem:
@@ -394,64 +460,118 @@ class SQLiteOutboxRepository:
     """Satisfies ports.repositories.OutboxRepository.
 
     enqueue() returns False when idempotency_key already exists — first-line send-once.
-    claim() moves QUEUED → SENDING atomically.
+    claim()   moves QUEUED -> SENDING atomically and stamps claimed_at for the lease.
+    mark()    records the true outcome: FAILED requeues, SENT and DEAD are terminal.
     """
 
     def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
         self._factory = factory
 
     async def enqueue(self, msg: OutboundMessage) -> bool:
-        """Returns False when idempotency_key already in outbox."""
-        row = OutboxRow(
-            outbound_id=msg.outbound_id,
-            conversation_id=msg.conversation_id,
-            tenant_id=msg.tenant_id,
-            channel=msg.channel.value,
-            recipient=msg.recipient,
-            subject=msg.subject,
-            body_text=msg.body_text,
-            reply_headers=msg.reply_headers,
-            state=OutboxState.QUEUED.value,
-            idempotency_key=msg.idempotency_key,
-            retry_count=msg.retry_count,
-        )
-        async with self._factory() as session, session.begin():
+        """Returns False when idempotency_key is already in the outbox."""
+        async with self._factory() as session:
+            session.add(
+                OutboxRow(
+                    outbound_id=msg.outbound_id,
+                    conversation_id=msg.conversation_id,
+                    tenant_id=msg.tenant_id,
+                    channel=msg.channel.value,
+                    recipient=msg.recipient,
+                    subject=msg.subject,
+                    body_text=msg.body_text,
+                    reply_headers=msg.reply_headers,
+                    state=OutboxState.QUEUED.value,
+                    idempotency_key=msg.idempotency_key,
+                    retry_count=msg.retry_count,
+                )
+            )
             try:
-                session.add(row)
-                await session.flush()
-                return True
+                await session.commit()
             except IntegrityError:
+                await session.rollback()
                 return False
+            return True
 
     async def claim(self, limit: int = 10) -> list[OutboundMessage]:
-        """Atomically move QUEUED → SENDING and return claimed rows."""
+        """Atomically move QUEUED -> SENDING and return the claimed rows."""
         async with self._factory() as session, session.begin():
             subq = (
                 select(OutboxRow.outbound_id)
                 .where(OutboxRow.state == OutboxState.QUEUED.value)
+                .order_by(OutboxRow.id)
                 .limit(limit)
                 .scalar_subquery()
             )
-            stmt = (
+            res = await session.execute(
                 update(OutboxRow)
                 .where(
                     OutboxRow.outbound_id.in_(subq),
                     OutboxRow.state == OutboxState.QUEUED.value,
                 )
-                .values(state=OutboxState.SENDING.value)
+                .values(state=OutboxState.SENDING.value, claimed_at=_utcnow())
                 .returning(OutboxRow)
             )
-            res = await session.execute(stmt)
-            rows = list(res.scalars())
-            return [_row_to_outbound(r) for r in rows]
+            return [_row_to_outbound(r) for r in res.scalars()]
 
-    async def mark(self, outbound_id: str, state: OutboxState, error: str | None = None) -> None:
+    async def mark(
+        self,
+        outbound_id: str,
+        state: OutboxState,
+        error: str | None = None,
+        increment_retry: bool = False,
+    ) -> None:
+        """Record a delivery outcome.
+
+        FAILED means "try again": the row goes back to QUEUED with its retry counter
+        incremented, so the next poll picks it up. SENT and DEAD are terminal.
+        """
+        values: dict[str, Any] = {"last_error": error}
+
+        if state is OutboxState.FAILED:
+            values["state"] = OutboxState.QUEUED.value
+            values["claimed_at"] = None
+        else:
+            values["state"] = state.value
+            if state is OutboxState.SENT:
+                values["claimed_at"] = None
+
+        if increment_retry:
+            values["retry_count"] = OutboxRow.retry_count + 1
+
         async with self._factory() as session, session.begin():
             await session.execute(
-                update(OutboxRow)
-                .where(OutboxRow.outbound_id == outbound_id)
-                .values(state=state.value, last_error=error)
+                update(OutboxRow).where(OutboxRow.outbound_id == outbound_id).values(**values)
             )
+
+    async def requeue_expired(self, lease_minutes: int) -> int:
+        """Return SENDING rows older than the lease to QUEUED. Returns how many."""
+        cutoff = _utcnow() - timedelta(minutes=lease_minutes)
+        async with self._factory() as session, session.begin():
+            result = cast(
+                CursorResult[Any],
+                await session.execute(
+                    update(OutboxRow)
+                    .where(
+                        OutboxRow.state == OutboxState.SENDING.value,
+                        OutboxRow.claimed_at.is_not(None),
+                        OutboxRow.claimed_at < cutoff,
+                    )
+                    .values(
+                        state=OutboxState.QUEUED.value,
+                        claimed_at=None,
+                        last_error="reclaimed after worker lease expiry",
+                    )
+                ),
+            )
+            return int(result.rowcount or 0)
+
+    async def get(self, outbound_id: str) -> OutboundMessage | None:
+        async with self._factory() as session:
+            result = await session.execute(
+                select(OutboxRow).where(OutboxRow.outbound_id == outbound_id).limit(1)
+            )
+            row = result.scalar_one_or_none()
+            return _row_to_outbound(row) if row else None
 
 
 def _row_to_outbound(row: OutboxRow) -> OutboundMessage:
@@ -467,4 +587,58 @@ def _row_to_outbound(row: OutboxRow) -> OutboundMessage:
         state=OutboxState(row.state),
         idempotency_key=row.idempotency_key,
         retry_count=row.retry_count,
+        last_error=row.last_error,
     )
+
+
+# ---------- Audit repository ----------
+
+
+class SQLiteAuditRepository:
+    """Satisfies ports.repositories.AuditRepository.
+
+    Human review endpoints accept an `operator` and a `reason`. Before this existed
+    both were discarded, so the API promised an accountability record it did not keep.
+    """
+
+    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+        self._factory = factory
+
+    async def record(
+        self,
+        tenant_id: str,
+        actor: str,
+        action: str,
+        entity_type: str,
+        entity_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        async with self._factory() as session, session.begin():
+            session.add(
+                AuditRow(
+                    tenant_id=tenant_id,
+                    actor=actor,
+                    action=action,
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    payload=payload or {},
+                    at=_utcnow(),
+                )
+            )
+
+    async def for_entity(self, entity_id: str) -> list[dict[str, Any]]:
+        async with self._factory() as session:
+            result = await session.execute(
+                select(AuditRow).where(AuditRow.entity_id == entity_id).order_by(AuditRow.at)
+            )
+            return [
+                {
+                    "actor": r.actor,
+                    "action": r.action,
+                    "entity_type": r.entity_type,
+                    "entity_id": r.entity_id,
+                    "payload": r.payload,
+                    "at": r.at.isoformat(),
+                }
+                for r in result.scalars()
+            ]

@@ -26,8 +26,6 @@ class OpenRouterProvider:
         supports_json_schema=True,
         supports_tools=True,
         max_context=200000,
-        price_in_per_1k=0.001,
-        price_out_per_1k=0.005,
     )
 
     def __init__(self, api_key: str | None = None) -> None:

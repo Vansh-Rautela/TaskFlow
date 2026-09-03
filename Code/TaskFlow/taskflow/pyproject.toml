@@ -7,8 +7,6 @@ dependencies = [
     # web + api
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
-    "jinja2>=3.1",
-    "python-multipart>=0.0.12",
     # models + config
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
@@ -17,23 +15,29 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.36",
     "aiosqlite>=0.20",
     "alembic>=1.14",
-    # retrieval (embedded qdrant — NO server, NO docker)
+    # retrieval (embedded qdrant — NO server, NO docker).
+    # fastembed supplies both the dense and the sparse encoder; there is no
+    # separate sentence-transformers path.
     "qdrant-client[fastembed]>=1.12",
-    "sentence-transformers>=3.3",
-    # ml
-    "scikit-learn>=1.5",
-    "numpy>=2.0",
-    "joblib>=1.4",
-    # llm providers
+    # llm providers. OpenRouter and Ollama are reached over plain HTTP via httpx.
     "anthropic>=0.40",
     "ollama>=0.4",
-    # channels
-    "google-api-python-client>=2.150",
+    # PII detection (adapters/pii): named-entity recognition on top of the fixed-format
+    # regexes in services/pii.py, which can't recognize a name, email, or phone number
+    # that doesn't match a pattern. en_core_web_sm is pinned as a direct wheel URL —
+    # spaCy models aren't on PyPI under a plain version constraint.
+    "presidio-analyzer>=2.2",
+    "presidio-anonymizer>=2.2",
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+    # channels: Gmail IMAP-poll + SMTP are stdlib. Gmail Push (docs/14) needs the
+    # real API: OAuth2 user consent, the Gmail REST client, and a Pub/Sub puller.
     "google-auth-oauthlib>=1.2",
+    "google-api-python-client>=2.150",
+    "google-cloud-pubsub>=2.27",
     # ops
     "httpx>=0.28",
-    "tenacity>=9.0",
     "structlog>=24.4",
+    # operator console
     "streamlit>=1.40",
 ]
 
@@ -47,7 +51,6 @@ dev = [
     "types-PyYAML",
     "import-linter>=2.1",
     "pre-commit>=4.0",
-    "matplotlib>=3.9",
 ]
 
 [build-system]
@@ -56,6 +59,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/taskflow"]
+
+[tool.hatch.metadata]
+# en-core-web-sm ships as a wheel on GitHub, not on PyPI under a version constraint —
+# a direct URL is the only way to pin it.
+allow-direct-references = true
 
 [tool.ruff]
 line-length = 100
@@ -72,10 +80,23 @@ warn_return_any = true
 warn_unused_ignores = true
 ignore_missing_imports = true
 
+# The protected layers carry the business logic and must stay fully annotated.
 [[tool.mypy.overrides]]
-module = ["taskflow.domain.*", "taskflow.services.*", "taskflow.ports.*"]
+module = [
+    "taskflow.domain.*",
+    "taskflow.services.*",
+    "taskflow.ports.*",
+    "taskflow.pipeline.*",
+    "taskflow.worker.*",
+    "taskflow.config.*",
+]
 disallow_untyped_defs = true
 strict_equality = true
+
+# Alembic generates these; they are data, not code we maintain.
+[[tool.mypy.overrides]]
+module = ["taskflow.adapters.db.migrations.*"]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -99,5 +120,37 @@ type = "forbidden"
 source_modules = ["taskflow.domain", "taskflow.services"]
 forbidden_modules = [
     "taskflow.adapters", "taskflow.api", "taskflow.worker", "taskflow.dashboard",
-    "anthropic", "ollama", "qdrant_client", "googleapiclient", "sqlalchemy", "streamlit",
+    "anthropic", "ollama", "qdrant_client", "googleapiclient", "google", "sqlalchemy", "streamlit",
+    "presidio_analyzer", "presidio_anonymizer", "spacy",
+]
+
+# The pipeline is wired with ports and receives adapters via Deps. Importing a
+# concrete adapter here is how "SQLite -> Postgres is a config change" stops being true.
+[[tool.importlinter.contracts]]
+name = "the pipeline depends on ports, never on adapters"
+type = "forbidden"
+source_modules = ["taskflow.pipeline"]
+forbidden_modules = ["taskflow.adapters", "taskflow.api", "taskflow.dashboard"]
+
+# ports/ is the seam. It may describe domain objects; it may not reach into the
+# business logic on one side or an SDK on the other.
+[[tool.importlinter.contracts]]
+name = "ports depend only on the domain"
+type = "forbidden"
+source_modules = ["taskflow.ports"]
+forbidden_modules = [
+    "taskflow.services", "taskflow.adapters", "taskflow.pipeline", "taskflow.api",
+    "taskflow.worker", "taskflow.dashboard",
+    "anthropic", "ollama", "qdrant_client", "googleapiclient", "google", "sqlalchemy", "streamlit",
+    "presidio_analyzer", "presidio_anonymizer", "spacy",
+]
+
+# The domain is the innermost layer and imports nothing of ours.
+[[tool.importlinter.contracts]]
+name = "the domain imports nothing from taskflow"
+type = "forbidden"
+source_modules = ["taskflow.domain"]
+forbidden_modules = [
+    "taskflow.ports", "taskflow.services", "taskflow.adapters", "taskflow.pipeline",
+    "taskflow.api", "taskflow.worker", "taskflow.dashboard",
 ]

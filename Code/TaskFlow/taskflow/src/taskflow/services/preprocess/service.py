@@ -1,24 +1,22 @@
-"""Inbound Message Preprocessing Service.
+"""Inbound message preprocessing.
 
-Redacts sensitive PII (credit card numbers, SSNs, API keys) from inbound message text
-before passing to LLMs, ensuring raw sensitive credentials never enter prompt context.
+Redacts sensitive PII from inbound message text before it is passed to an LLM, so
+raw credentials — and, with `PresidioDetector` injected, a name, email, or phone
+number — never enter prompt context. `services.pii` is shared with the outbound
+validator so both stages agree on what "sensitive" means.
 """
 
-import re
+from taskflow.ports.pii import PIIDetector
+from taskflow.services.pii import RegexPIIDetector
 
-CC_PATTERN = re.compile(r"\b(?:\d[ -]*?){13,16}\b")
-SSN_PATTERN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
-SECRET_KEY_PATTERN = re.compile(
-    r"\b(?:sk|pk)_[a-zA-Z0-9_\-]{16,}\b|Bearer\s+[a-zA-Z0-9._\-]{20,}", re.IGNORECASE
-)
+_default_detector: PIIDetector = RegexPIIDetector()
 
 
-def preprocess_message_text(text: str) -> str:
-    """Return PII-redacted text safe for LLM prompt context."""
-    if not text:
-        return ""
+def preprocess_message_text(text: str, detector: PIIDetector | None = None) -> str:
+    """Return PII-redacted text safe for LLM prompt context.
 
-    redacted = CC_PATTERN.sub("[REDACTED_CREDIT_CARD]", text)
-    redacted = SSN_PATTERN.sub("[REDACTED_SSN]", redacted)
-    redacted = SECRET_KEY_PATTERN.sub("[REDACTED_API_KEY]", redacted)
-    return redacted
+    `detector` defaults to the dependency-free regex detector so every existing
+    caller keeps working unchanged; `bootstrap.py` injects `PresidioDetector` for
+    real traffic.
+    """
+    return (detector or _default_detector).redact(text)

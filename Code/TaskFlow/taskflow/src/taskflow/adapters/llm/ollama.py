@@ -23,8 +23,6 @@ class OllamaProvider:
         supports_json_schema=True,
         supports_tools=False,
         max_context=32000,
-        price_in_per_1k=0.0,
-        price_out_per_1k=0.0,
     )
 
     def __init__(self, base_url: str | None = None) -> None:
@@ -69,7 +67,7 @@ class OllamaProvider:
                         "num_predict": max_tokens,
                     },
                 )
-            except ollama.ResponseError as err:
+            except ollama.ResponseError:
                 if format_arg and isinstance(format_arg, dict):
                     # Fallback to standard format="json" if model GBNF grammar generation fails
                     response = await self._client.chat(

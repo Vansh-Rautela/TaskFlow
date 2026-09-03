@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Live Gmail Inbound Email Poller Daemon CLI.
+"""Gmail inbound poller.
 
-Polls imap.gmail.com:993 for unread emails sent to supportfortaskflow@gmail.com,
-processes them through TaskFlow's 8-stage pipeline, redacts PII, checks policies,
-dispatches Telegram/Email alerts on human review, and enqueues auto-send replies.
+Polls Gmail over IMAP for unseen mail and posts each message to the running API's
+`POST /messages` endpoint. Deduplication is enforced there against the RFC-822
+Message-ID, so a redelivered mail is dropped rather than answered twice.
 
-Usage:
+This process never opens the vector store — only the API does — so it can run
+alongside `make api` without the two of them fighting over the embedded Qdrant
+store's exclusive file lock. Start the API first: this will fail every poll until
+it's reachable.
+
     uv run python scripts/start_gmail_poller.py
 """
 
@@ -13,46 +17,36 @@ import asyncio
 import sys
 
 from taskflow.adapters.channels.gmail_poller import GmailIMAPPoller
-from taskflow.adapters.db.engine import build_engine, build_session_factory
-from taskflow.adapters.db.repositories import SQLiteTraceRepository
-from taskflow.adapters.db.repositories import SQLiteReviewRepository, SQLiteOutboxRepository
-from taskflow.adapters.llm.router import ProviderRouter
 from taskflow.config.settings import settings
-from taskflow.pipeline.orchestrator import Deps
 
 
 async def main() -> int:
-    print("================================================================================")
-    print("      TASKFLOW GMAIL INBOUND EMAIL POLLER DAEMON — ACTIVE")
-    print("================================================================================")
-    print(f"📧 Listening to Gmail: {settings().gmail_user or 'supportfortaskflow@gmail.com'}")
-    print(f"⏱️  Polling Interval: {settings().gmail_poll_seconds or 15} seconds")
-    print("================================================================================")
+    cfg = settings()
+    if not cfg.gmail_user or not cfg.gmail_app_password:
+        print(
+            "GMAIL_USER and GMAIL_APP_PASSWORD must be set in .env to poll Gmail.",
+            file=sys.stderr,
+        )
+        return 2
+    if not cfg.taskflow_api_token or cfg.taskflow_api_token == "change-me":
+        print("TASKFLOW_API_TOKEN must be set in .env to post to the API.", file=sys.stderr)
+        return 2
+    if cfg.gmail_inbound_mode == "push":
+        print(
+            "Note: GMAIL_INBOUND_MODE=push in .env, but this is the IMAP poller — "
+            "run `make poller-push` instead, or ignore this if you're testing IMAP deliberately.",
+            file=sys.stderr,
+        )
 
-    db_url = "sqlite+aiosqlite:///./data/taskflow.db"
-    engine = build_engine(db_url)
-    factory = build_session_factory(engine)
-
-    trace_repo = SQLiteTraceRepository(factory)
-    review_repo = SQLiteReviewRepository(factory)
-    outbox_repo = SQLiteOutboxRepository(factory)
-
-    llm_router = ProviderRouter()
-    deps = Deps(
-        trace_repo=trace_repo,
-        llm_router=llm_router,
-        review_repo=review_repo,
-        outbox_repo=outbox_repo,
+    poller = GmailIMAPPoller()
+    print(
+        f"TaskFlow Gmail poller — watching {cfg.gmail_user}, posting to "
+        f"{poller.api_base_url} every {poller.poll_interval_s:.0f}s. Ctrl-C to stop."
     )
-
-    poller = GmailIMAPPoller(deps=deps, poll_interval_s=float(settings().gmail_poll_seconds or 15))
-
     try:
         await poller.run_poller_loop()
-    except KeyboardInterrupt:
-        print("\nGmail poller daemon stopped by user.")
-    finally:
-        await engine.dispose()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("\nPoller stopped.")
 
     return 0
 

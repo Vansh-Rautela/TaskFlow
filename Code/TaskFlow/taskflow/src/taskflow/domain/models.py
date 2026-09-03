@@ -46,7 +46,7 @@ class InboundMessage(Base):
     subject: str | None = None
     body_text: str  # normalized, quoted replies stripped
     body_redacted: str  # PII-redacted; this is what reaches the LLM
-    thread_ref: str | None = None  # gmail threadId | slack thread_ts
+    thread_ref: str | None = None  # gmail threadId, for grouping a reply thread
     provider_message_id: str
     provider_thread_headers: dict[str, str] = Field(default_factory=dict)  # In-Reply-To etc
     received_at: datetime
@@ -68,27 +68,43 @@ class ThreadContext(Base):
 
 
 class Chunk(Base):
+    """A chunk coming back out of the index."""
+
     chunk_id: str  # "{doc_id}:{ordinal}"
     doc_id: str
     title: str
     section: str | None
     text: str
-    doc_type: str
-    product_tier: str | None = None
-    intents: list[str] = Field(default_factory=list)
     version: str
     source_path: str
     tenant_id: str
 
-    @staticmethod
-    def make_doc_id(relpath: str, title: str) -> str:
-        return hashlib.sha256(f"{relpath}\n{title}".encode()).hexdigest()[:16]
+
+class DocumentChunk(Base):
+    """A chunk on its way into the index.
+
+    Distinct from `Chunk`, which is a chunk coming back out of it: ingestion knows
+    the ordinal and the source heading, retrieval knows the tenant and the version.
+    """
+
+    chunk_id: str
+    doc_id: str
+    title: str
+    section_heading: str | None
+    text: str
+    ordinal: int
 
 
 class ScoredChunk(Base):
+    """A retrieved chunk and the scores each stage gave it.
+
+    `rrf_score` is a fusion rank score: it says where the two retrievers agreed this
+    chunk sat, not how well it answers anything. `rerank_score` is a calibrated 0-1
+    relevance from the cross-encoder. `final_score` prefers the latter, which is what
+    makes a threshold on it mean something.
+    """
+
     chunk: Chunk
-    dense_score: float | None = None
-    sparse_score: float | None = None
     rrf_score: float | None = None
     rerank_score: float | None = None
 
@@ -135,16 +151,17 @@ class DraftOutput(Base):
 
     @field_validator("citations", mode="before")
     @classmethod
-    def _coerce_citations(cls, v: Any) -> list[Any]:
-        if isinstance(v, list):
-            res = []
-            for item in v:
-                if isinstance(item, str):
-                    res.append({"chunk_id": item, "doc_title": item})
-                else:
-                    res.append(item)
-            return res
-        return v
+    def _coerce_citations(cls, v: Any) -> Any:
+        """Accept a bare chunk id where a Citation object was expected.
+
+        Smaller models often emit `"citations": ["kb-1:0"]`. Coercing here beats
+        rejecting an otherwise sound draft over its JSON shape.
+        """
+        if not isinstance(v, list):
+            return v
+        return [
+            {"chunk_id": item, "doc_title": item} if isinstance(item, str) else item for item in v
+        ]
 
     @model_validator(mode="after")
     def _citation_markers_present(self) -> Self:
@@ -154,7 +171,9 @@ class DraftOutput(Base):
             ]
             if missing:
                 # If local model generated citations not inline, don't crash — strip unreferenced citations
-                valid_citations = [c for c in self.citations if f"[{c.chunk_id}]" in self.response_text]
+                valid_citations = [
+                    c for c in self.citations if f"[{c.chunk_id}]" in self.response_text
+                ]
                 object.__setattr__(self, "citations", valid_citations)
         return self
 
@@ -257,6 +276,9 @@ class OutboundMessage(Base):
     state: OutboxState = OutboxState.QUEUED
     idempotency_key: str
     retry_count: int = 0
+    # Why the last delivery attempt failed. Persisted so a FAILED or DEAD row can
+    # explain itself without reading the worker's logs.
+    last_error: str | None = None
 
     @staticmethod
     def make_idempotency_key(conversation_id: str, body_text: str) -> str:

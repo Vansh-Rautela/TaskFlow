@@ -1,48 +1,30 @@
-"""PII & Secret Leakage validator for Phase P7.
+"""PII and secret leakage validator.
 
-Scans outbound LLM drafts for sensitive credit card numbers, SSNs, API secret keys,
-and authorization tokens using deterministic regex patterns.
+Scans an outbound draft for the same things `preprocess` strips on the way in.
+A hit is blocking: gate G2 vetoes auto-send.
 """
 
-import re
-
 from taskflow.domain.models import DraftOutput, ValidatorResult
+from taskflow.ports.pii import PIIDetector
+from taskflow.services.pii import RegexPIIDetector
 
-CC_PATTERN = re.compile(r"\b(?:\d[ -]*?){13,16}\b")
-SSN_PATTERN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
-SECRET_KEY_PATTERN = re.compile(
-    r"\b(?:sk|pk)_[a-zA-Z0-9_\-]{16,}\b|Bearer\s+[a-zA-Z0-9._\-]{20,}", re.IGNORECASE
-)
+_default_detector: PIIDetector = RegexPIIDetector()
 
 
-async def validate_pii(draft: DraftOutput) -> ValidatorResult:
-    """Fail the draft if it contains sensitive PII or API credentials."""
-    text = draft.response_text or ""
+async def validate_pii(draft: DraftOutput, detector: PIIDetector | None = None) -> ValidatorResult:
+    """Fail the draft if it contains sensitive PII or API credentials.
 
-    if CC_PATTERN.search(text):
+    `detector` defaults to the dependency-free regex detector, matching
+    `preprocess.service.preprocess_message_text` — see its docstring for why.
+    """
+    leaked = (detector or _default_detector).first_match(draft.response_text or "")
+
+    if leaked:
         return ValidatorResult(
             validator_name="pii_leak",
             passed=False,
             score=0.0,
-            reason="Detected potential PII leak (Credit Card format)",
-            blocking=True,
-        )
-
-    if SSN_PATTERN.search(text):
-        return ValidatorResult(
-            validator_name="pii_leak",
-            passed=False,
-            score=0.0,
-            reason="Detected potential PII leak (Social Security Number format)",
-            blocking=True,
-        )
-
-    if SECRET_KEY_PATTERN.search(text):
-        return ValidatorResult(
-            validator_name="pii_leak",
-            passed=False,
-            score=0.0,
-            reason="Detected potential API secret or Bearer token leak",
+            reason=f"Detected potential PII leak ({leaked} format)",
             blocking=True,
         )
 

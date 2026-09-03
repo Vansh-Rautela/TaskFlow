@@ -144,6 +144,9 @@ class OutboxRow(Base):
     idempotency_key: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set when a worker claims the row. A row still SENDING after the configured
+    # lease is assumed orphaned by a crashed worker and returned to QUEUED.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (UniqueConstraint("idempotency_key", name="uq_outbox_idempotency_key"),)
 

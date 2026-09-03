@@ -31,11 +31,15 @@ def test_refund_ceiling_violation():
         draft_confidence=0.9,
     )
     violations = evaluate_policies(msg, draft, Intent.REFUND)
-    assert any(v.rule_id == "refund_ceiling" and v.severity == Severity.CRITICAL for v in violations)
+    assert any(
+        v.rule_id == "refund_ceiling" and v.severity == Severity.CRITICAL for v in violations
+    )
 
 
 def test_legal_threat_inbound_violation():
-    msg = make_msg("If you do not fix this immediately, I am filing a lawsuit and taking legal action!")
+    msg = make_msg(
+        "If you do not fix this immediately, I am filing a lawsuit and taking legal action!"
+    )
     draft = DraftOutput(
         response_text="Thank you for reaching out. We are looking into your issue.",
         citations=[],
@@ -44,7 +48,10 @@ def test_legal_threat_inbound_violation():
         draft_confidence=0.9,
     )
     violations = evaluate_policies(msg, draft, Intent.COMPLAINT)
-    assert any(v.rule_id == "legal_threat_escalation" and v.severity == Severity.CRITICAL for v in violations)
+    assert any(
+        v.rule_id == "legal_threat_escalation" and v.severity == Severity.CRITICAL
+        for v in violations
+    )
 
 
 def test_no_credential_request_violation():
@@ -57,7 +64,9 @@ def test_no_credential_request_violation():
         draft_confidence=0.9,
     )
     violations = evaluate_policies(msg, draft, Intent.ACCOUNT)
-    assert any(v.rule_id == "no_credential_request" and v.severity == Severity.CRITICAL for v in violations)
+    assert any(
+        v.rule_id == "no_credential_request" and v.severity == Severity.CRITICAL for v in violations
+    )
 
 
 def test_gdpr_deletion_routing():
@@ -70,7 +79,9 @@ def test_gdpr_deletion_routing():
         draft_confidence=0.9,
     )
     violations = evaluate_policies(msg, draft, Intent.GENERAL)
-    assert any(v.rule_id == "gdpr_deletion_routing" and v.severity == Severity.CRITICAL for v in violations)
+    assert any(
+        v.rule_id == "gdpr_deletion_routing" and v.severity == Severity.CRITICAL for v in violations
+    )
 
 
 def test_clean_draft_no_violations():

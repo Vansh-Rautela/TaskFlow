@@ -1,170 +1,221 @@
 #!/usr/bin/env python3
-"""Classifier evaluation script for Phase P6.
+"""Intent classification evaluation.
 
-Evaluates intent classification performance over data/datasets/classifier_test.jsonl,
-computing Accuracy, Macro F1, Per-intent metrics, and average latency.
-Publishes markdown summary report to docs/metrics/classification.md.
+Two paths exist and they are measured separately, because they perform very
+differently and averaging them would describe neither:
+
+  --path keyword   the deterministic fallback, offline, free
+  --path llm       the real provider chain (costs money, needs a key)
+  --path both      default
+
+The previous version of this script fed `_fallback_classify` back through a fake
+provider and reported the result as LLM accuracy. That measured the keyword
+classifier against itself and labelled the number as something else. It also
+unpacked two values from `classify_intent`, which returns three, so it raised
+before printing anything.
+
+    uv run python scripts/eval_classifier.py --path keyword
 """
 
+import argparse
 import asyncio
 import json
-import sys
 import time
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, ".")
-
-from pydantic import BaseModel
-
 from taskflow.adapters.llm.router import ProviderRouter
-from taskflow.domain.models import ClassificationOutput, LLMCall
-from taskflow.ports.llm import LLMResponse, ProviderCapabilities
-from taskflow.services.classify.service import _fallback_classify, classify_intent
-
-
-class EvalMockProvider:
-    name: str = "eval_mock"
-    capabilities = ProviderCapabilities(
-        supports_json_schema=True, supports_tools=False, max_context=32000
-    )
-
-    async def health(self) -> bool:
-        return True
-
-    async def complete(
-        self, *, system: str, user: str, model: str, schema: type[BaseModel] | None = None, **kwargs
-    ) -> LLMResponse:
-        intent, conf = _fallback_classify(user)
-        output = ClassificationOutput(
-            intent=intent, confidence=conf, reasoning="Eval mock classification"
-        )
-        call = LLMCall(
-            purpose="classification",
-            provider=self.name,
-            model=model,
-            prompt_tokens=50,
-            completion_tokens=20,
-            cost_usd=0.0,
-            latency_ms=5,
-        )
-        return LLMResponse(text=output.model_dump_json(), call=call)
-
+from taskflow.config.settings import provider_priority
+from taskflow.services.classify.service import classify_intent
 
 TEST_DATASET_PATH = Path("data/datasets/classifier_test.jsonl")
 METRICS_OUT_PATH = Path("docs/metrics/classification.md")
 
+# The datasets were generated against a 7-label taxonomy that predates the `Intent`
+# enum: `cancellation`, `enterprise` and `other` are not members of it and the system
+# cannot, by construction, emit them. Scoring against them would count correct
+# classifications as errors.
+#
+# The mapping below follows the taxonomy definitions in `services/classify`:
+# closing an account is ACCOUNT, SSO/SAML/SOC2 is TECHNICAL, and an unclassifiable
+# message is UNKNOWN. It is applied to the *labels*, reported explicitly, and never
+# to the predictions.
+LEGACY_LABEL_MAP = {
+    "cancellation": "account",
+    "enterprise": "technical",
+    "other": "unknown",
+}
 
-def _load_test_rows() -> list[dict]:
+
+def _load_rows() -> list[dict]:
     if not TEST_DATASET_PATH.exists():
         return []
-    rows = []
-    for line in TEST_DATASET_PATH.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    return rows
+    return [
+        json.loads(line)
+        for line in TEST_DATASET_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
-def _write_report(report_content: str) -> None:
-    METRICS_OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    METRICS_OUT_PATH.write_text(report_content, encoding="utf-8")
+class Result:
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.total = 0
+        self.correct = 0
+        self.latency_ms = 0.0
+        self.tp: dict[str, int] = defaultdict(int)
+        self.fp: dict[str, int] = defaultdict(int)
+        self.fn: dict[str, int] = defaultdict(int)
+        self.confusions: dict[tuple[str, str], int] = defaultdict(int)
+        self.remapped = 0
+        self.error: str | None = None
+
+    @property
+    def accuracy(self) -> float:
+        return (self.correct / self.total * 100.0) if self.total else 0.0
+
+    @property
+    def avg_latency_ms(self) -> float:
+        return (self.latency_ms / self.total) if self.total else 0.0
+
+    def macro_f1(self) -> float:
+        labels = set(self.tp) | set(self.fp) | set(self.fn)
+        scores = []
+        for label in labels:
+            tp, fp, fn = self.tp[label], self.fp[label], self.fn[label]
+            precision = tp / (tp + fp) if (tp + fp) else 0.0
+            recall = tp / (tp + fn) if (tp + fn) else 0.0
+            scores.append(
+                2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+            )
+        return sum(scores) / len(scores) if scores else 0.0
+
+    def record(self, expected: str, predicted: str, elapsed_ms: float) -> None:
+        self.total += 1
+        self.latency_ms += elapsed_ms
+        if predicted == expected:
+            self.correct += 1
+            self.tp[expected] += 1
+        else:
+            self.fp[predicted] += 1
+            self.fn[expected] += 1
+            self.confusions[(expected, predicted)] += 1
 
 
-async def evaluate() -> int:
-    test_rows = _load_test_rows()
-    if not test_rows:
-        print(
-            f"Error: {TEST_DATASET_PATH} not found or empty. Run scripts/generate_datasets.py first."
+async def run_path(label: str, rows: list[dict], router: ProviderRouter | None) -> Result:
+    result = Result(label)
+    for row in rows:
+        raw = str(row.get("intent", "")).lower()
+        expected = LEGACY_LABEL_MAP.get(raw, raw)
+        if raw != expected:
+            result.remapped += 1
+        start = time.perf_counter_ns()
+        try:
+            intent, _confidence, _call = await classify_intent(row.get("text", ""), router=router)
+        except Exception as err:  # a broken provider must not be reported as 0% accuracy
+            result.error = f"{type(err).__name__}: {err}"
+            return result
+        elapsed = (time.perf_counter_ns() - start) / 1_000_000
+        result.record(expected, intent.value.lower(), elapsed)
+    return result
+
+
+def render(result: Result) -> str:
+    if result.error:
+        return f"\n=== {result.label.upper()} ===\n  did not run: {result.error}\n"
+
+    lines = [
+        f"\n=== {result.label.upper()} ===",
+        f"  Samples:      {result.total}",
+        f"  Accuracy:     {result.accuracy:.2f}%",
+        f"  Macro F1:     {result.macro_f1():.4f}",
+        f"  Avg latency:  {result.avg_latency_ms:.1f} ms",
+    ]
+    if result.remapped:
+        lines.append(
+            f"  Labels remapped from the legacy taxonomy: {result.remapped}/{result.total}"
         )
+    if result.confusions:
+        lines.append("  Most common confusions (expected -> predicted):")
+        for (exp, pred), n in sorted(result.confusions.items(), key=lambda kv: -kv[1])[:5]:
+            lines.append(f"    {exp} -> {pred}: {n}")
+    return "\n".join(lines)
+
+
+async def evaluate(path: str) -> int:
+    rows = _load_rows()
+    if not rows:
+        print(f"Error: {TEST_DATASET_PATH} not found or empty. Run scripts/generate_datasets.py.")
         return 1
 
-    print(f"Loading classification test set from {TEST_DATASET_PATH} ({len(test_rows)} samples)...")
+    legacy = sum(1 for r in rows if str(r.get("intent", "")).lower() in LEGACY_LABEL_MAP)
+    print(f"Loaded {len(rows)} labelled samples from {TEST_DATASET_PATH}.")
+    if legacy:
+        print(
+            f"  {legacy} carry legacy labels not in the Intent enum; mapped as "
+            + ", ".join(f"{k}->{v}" for k, v in LEGACY_LABEL_MAP.items())
+        )
+    results: list[Result] = []
 
-    mock_provider = EvalMockProvider()
-    router = ProviderRouter(providers={"claude": mock_provider, "ollama": mock_provider})
+    if path in ("keyword", "both"):
+        # router=None takes the deterministic keyword path.
+        results.append(await run_path("keyword classifier (offline fallback)", rows, None))
 
-    total_samples = len(test_rows)
-    correct_predictions = 0
-    total_latency_ms = 0.0
+    if path in ("llm", "both"):
+        print(f"Provider priority: {provider_priority()} — this path makes real API calls.")
+        results.append(
+            await run_path("llm classifier (real provider chain)", rows, ProviderRouter())
+        )
 
-    # Counts for per-class precision/recall
-    true_positives = defaultdict(int)
-    false_positives = defaultdict(int)
-    false_negatives = defaultdict(int)
+    for result in results:
+        print(render(result))
 
-    for row in test_rows:
-        text = row.get("text", "")
-        expected = row.get("intent", "").lower()
-
-        start_ns = time.perf_counter_ns()
-        predicted_intent, _confidence = await classify_intent(text, router=router)
-        elapsed_ms = (time.perf_counter_ns() - start_ns) / 1_000_000
-        total_latency_ms += elapsed_ms
-
-        pred_str = predicted_intent.value.lower()
-
-        if pred_str == expected:
-            correct_predictions += 1
-            true_positives[expected] += 1
+    METRICS_OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    body = ["# Classification Metrics", "", "Generated by `scripts/eval_classifier.py`.", ""]
+    body.append("| Path | Samples | Accuracy | Macro F1 | Avg latency |")
+    body.append("|---|---|---|---|---|")
+    for r in results:
+        if r.error:
+            body.append(f"| {r.label} | — | did not run | — | {r.error} |")
         else:
-            false_positives[pred_str] += 1
-            false_negatives[expected] += 1
-
-    accuracy = (correct_predictions / total_samples) * 100.0
-    avg_latency_ms = total_latency_ms / total_samples
-
-    all_intents = (
-        set(true_positives.keys()) | set(false_positives.keys()) | set(false_negatives.keys())
-    )
-    f1_scores = []
-
-    per_intent_lines = []
-    for intent in sorted(all_intents):
-        tp = true_positives[intent]
-        fp = false_positives[intent]
-        fn = false_negatives[intent]
-
-        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = (2 * prec * rec) / (prec + rec) if (prec + rec) > 0 else 0.0
-        f1_scores.append(f1)
-
-        per_intent_lines.append(f"| {intent} | {prec:.2f} | {rec:.2f} | {f1:.2f} | {tp + fn} |")
-
-    macro_f1 = (sum(f1_scores) / len(f1_scores)) if f1_scores else 0.0
-
-    print("\n=== INTENT CLASSIFICATION EVALUATION RESULTS ===")
-    print(f"Total Samples:     {total_samples}")
-    print(f"Overall Accuracy:  {accuracy:.2f}%")
-    print(f"Macro F1 Score:    {macro_f1:.4f}")
-    print(f"Average Latency:   {avg_latency_ms:.1f} ms")
-
-    table_rows_str = "\n".join(per_intent_lines)
-    report_content = f"""# Intent Classification Metrics — Phase P6
-
-- **Samples Evaluated:** {total_samples}
-- **Overall Accuracy:** {accuracy:.2f}%
-- **Macro F1 Score:** {macro_f1:.4f}
-- **Average Latency:** {avg_latency_ms:.1f} ms
-
-## Per-Intent Breakdown
-
-| Intent | Precision | Recall | F1 Score | Support |
-|---|---|---|---|---|
-{table_rows_str}
-
-## Evaluation Configuration
-- **Model Classifier:** `ProviderRouter` Structured Output
-- **Fallback:** Deterministic Keyword Classifier
-- **Dataset:** `data/datasets/classifier_test.jsonl`
-"""
-    _write_report(report_content)
-    print(f"\nPublished evaluation report to {METRICS_OUT_PATH}")
+            body.append(
+                f"| {r.label} | {r.total} | {r.accuracy:.2f}% | {r.macro_f1():.4f} | "
+                f"{r.avg_latency_ms:.1f} ms |"
+            )
+    if any(r.remapped for r in results):
+        body += [
+            "",
+            "## Label mapping",
+            "",
+            "The datasets were generated against a 7-label taxonomy that predates the",
+            "`Intent` enum. Three of its labels are not enum members, so the system cannot",
+            "emit them and scoring against them would count correct answers as errors.",
+            "Labels — never predictions — are mapped as follows before scoring:",
+            "",
+            "| Dataset label | Scored as | Why |",
+            "|---|---|---|",
+            "| `cancellation` | `account` | Closing an account and cancelling a subscription are ACCOUNT in the taxonomy |",
+            "| `enterprise` | `technical` | SSO, SAML and SOC2 are TECHNICAL |",
+            "| `other` | `unknown` | The abstain target |",
+        ]
+    body += [
+        "",
+        "The two paths are reported separately on purpose. The keyword classifier is the",
+        "offline fallback used when every provider fails; it is a substring matcher and is",
+        "expected to score well below the LLM path. Averaging them would describe neither.",
+        "",
+        f"Test set: `{TEST_DATASET_PATH}` (held out; `scripts/check_leakage.py` asserts no",
+        "overlap with the training split).",
+    ]
+    await asyncio.to_thread(METRICS_OUT_PATH.write_text, "\n".join(body) + "\n", "utf-8")
+    print(f"\nPublished report to {METRICS_OUT_PATH}")
     return 0
 
 
 def main() -> int:
-    return asyncio.run(evaluate())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--path", choices=["keyword", "llm", "both"], default="both")
+    return asyncio.run(evaluate(parser.parse_args().path))
 
 
 if __name__ == "__main__":

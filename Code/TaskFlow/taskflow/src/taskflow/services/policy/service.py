@@ -42,11 +42,7 @@ def evaluate_policies(
 
         detect_type = detect.get("type", "")
 
-        # Target text selection based on applies_to
-        if applies_to == "inbound":
-            target_text = inbound_text
-        else:
-            target_text = draft_text_lower
+        target_text = inbound_text if applies_to == "inbound" else draft_text_lower
 
         if detect_type == "amount_over":
             pattern = detect.get("pattern", r"\$\s?([0-9][0-9,]*(?:\.[0-9]{2})?)")
@@ -68,23 +64,24 @@ def evaluate_policies(
                     continue
 
         elif detect_type == "regex_any":
-            patterns = detect.get("patterns", [])
-            for pat in patterns:
-                match = re.search(pat, target_text, re.IGNORECASE)
-                if match:
+            for pat in detect.get("patterns", []):
+                found = re.search(pat, target_text, re.IGNORECASE)
+                if found:
                     violations.append(
                         PolicyViolation(
                             rule_id=rule_id,
                             severity=severity,
                             description=description,
-                            matched_text=match.group(0),
+                            matched_text=found.group(0),
                         )
                     )
-                    break
+                    break  # one report per rule
 
         elif detect_type == "regex_absent":
             patterns = detect.get("patterns", [])
-            if draft_text and not any(re.search(pat, draft_text, re.IGNORECASE) for pat in patterns):
+            if draft_text and not any(
+                re.search(pat, draft_text, re.IGNORECASE) for pat in patterns
+            ):
                 violations.append(
                     PolicyViolation(
                         rule_id=rule_id,
@@ -95,19 +92,47 @@ def evaluate_policies(
                 )
 
         elif detect_type == "price_mismatch":
-            known_prices = detect.get("known", {})
-            for plan, expected_price in known_prices.items():
-                if plan in draft_text_lower:
-                    for match in re.finditer(r"\$\s?(\d+)", draft_text):
-                        quoted = int(match.group(1))
-                        if quoted != expected_price and quoted > 0:
-                            violations.append(
-                                PolicyViolation(
-                                    rule_id=rule_id,
-                                    severity=severity,
-                                    description=description,
-                                    matched_text=f"{plan}: ${quoted} (expected ${expected_price})",
-                                )
-                            )
+            violations.extend(
+                _detect_price_mismatch(rule_id, severity, description, detect, draft_text)
+            )
+
+    return violations
+
+
+# A price is only "mismatched" if it is quoted near the plan it belongs to. Scanning
+# the whole draft for every plan named anywhere in it flagged unrelated figures — and
+# a bare `plan in text` test matched "pro" inside "provide", "process", "problem".
+_PLAN_PRICE_WINDOW = 80
+
+
+def _detect_price_mismatch(
+    rule_id: str,
+    severity: Severity,
+    description: str,
+    detect: dict[str, Any],
+    draft_text: str,
+) -> list[PolicyViolation]:
+    """Flag a price quoted within `_PLAN_PRICE_WINDOW` characters of a plan name."""
+    known: dict[str, int] = detect.get("known", {})
+    violations: list[PolicyViolation] = []
+
+    for plan, expected_price in known.items():
+        # \b so "pro" does not match "provide"; the plan name must stand alone.
+        for plan_match in re.finditer(rf"\b{re.escape(plan)}\b", draft_text, re.IGNORECASE):
+            start = max(0, plan_match.start() - _PLAN_PRICE_WINDOW)
+            window = draft_text[start : plan_match.end() + _PLAN_PRICE_WINDOW]
+
+            for price_match in re.finditer(r"\$\s?(\d+)", window):
+                quoted = int(price_match.group(1))
+                if quoted > 0 and quoted != int(expected_price):
+                    violations.append(
+                        PolicyViolation(
+                            rule_id=rule_id,
+                            severity=severity,
+                            description=description,
+                            matched_text=f"{plan}: ${quoted} (expected ${expected_price})",
+                        )
+                    )
+            break  # one report per plan is enough
 
     return violations

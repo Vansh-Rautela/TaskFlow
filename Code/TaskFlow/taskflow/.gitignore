@@ -4,6 +4,7 @@ secrets/
 *.db-wal
 *.db-shm
 data/qdrant/
+data/gmail_push_state.json
 src/taskflow/ml/artifacts/*.joblib
 src/taskflow/ml/artifacts/*.npy
 .venv/
@@ -12,4 +13,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .streamlit/secrets.toml
+
+# Generated design bundle: 2 MB of editor payload, regenerated wholesale from
+# design/Main.dc.html + design/canvas.json. The sources are what is tracked.
+design/taskflow-console.html
 !data/snapshots/demo_seed.db

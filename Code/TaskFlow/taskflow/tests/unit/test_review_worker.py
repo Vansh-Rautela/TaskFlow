@@ -22,6 +22,7 @@ from taskflow.services.review.service import (
     reject_review,
 )
 from taskflow.worker import run_worker_loop
+from tests.fixtures.fakes import RecordingChannel
 
 
 @pytest.fixture
@@ -32,6 +33,11 @@ async def factory():
     sf = build_session_factory(engine)
     yield sf
     await engine.dispose()
+
+
+def _make_unaddressable_item(review_id: str) -> ReviewItem:
+    """A review whose customer address was never captured."""
+    return _make_review_item(review_id).model_copy(update={"sender_email": None})
 
 
 def _make_review_item(review_id: str = "rev-001") -> ReviewItem:
@@ -62,6 +68,8 @@ def _make_review_item(review_id: str = "rev-001") -> ReviewItem:
         ),
         created_at=now,
         sla_deadline=now + timedelta(hours=4),
+        sender_email="customer@example.com",
+        inbound_body="I would like an update on my ticket.",
     )
 
 
@@ -135,12 +143,9 @@ async def test_optimistic_lock_collision(factory):
     assert not res2
 
 
-@pytest.mark.asyncio
-async def test_worker_process_batch(factory):
-    """Worker claims queued outbox messages and delivers them."""
-    outbox_repo = SQLiteOutboxRepository(factory)
-    outbound = OutboundMessage(
-        outbound_id="out-555",
+def _outbound(outbound_id: str = "out-555", key: str = "idemp-555") -> OutboundMessage:
+    return OutboundMessage(
+        outbound_id=outbound_id,
         conversation_id="c-555",
         tenant_id="test",
         channel=Channel.EMAIL,
@@ -149,10 +154,37 @@ async def test_worker_process_batch(factory):
         body_text="Your ticket has been updated.",
         reply_headers={},
         state=OutboxState.QUEUED,
-        idempotency_key="idemp-555",
+        idempotency_key=key,
         retry_count=0,
     )
-    await outbox_repo.enqueue(outbound)
 
-    processed = await run_worker_loop(outbox_repo, run_once=True)
-    assert processed == 1
+
+@pytest.mark.asyncio
+async def test_worker_delivers_and_marks_sent(factory):
+    """A message the channel accepted is marked SENT."""
+    outbox_repo = SQLiteOutboxRepository(factory)
+    channel = RecordingChannel()
+    await outbox_repo.enqueue(_outbound())
+
+    result = await run_worker_loop(outbox_repo, channel, run_once=True)
+
+    assert result == {"sent": 1, "retried": 0, "dead": 0}
+    assert len(channel.sent) == 1
+    stored = await outbox_repo.get("out-555")
+    assert stored.state == OutboxState.SENT
+
+
+@pytest.mark.asyncio
+async def test_approve_without_sender_email_enqueues_nothing(factory):
+    """A reply with no address cannot be delivered, so none is queued.
+
+    The previous implementation substituted `support-fallback@taskflow.dev`, which
+    produced an outbox row that would be marked SENT while the customer received
+    nothing."""
+    review_repo = SQLiteReviewRepository(factory)
+    outbox_repo = SQLiteOutboxRepository(factory)
+    await review_repo.create(_make_unaddressable_item("rev-200"))
+
+    assert await approve_review(review_repo, outbox_repo, "rev-200")
+    assert (await review_repo.get("rev-200")).state == ReviewState.APPROVED
+    assert await outbox_repo.claim(limit=10) == []

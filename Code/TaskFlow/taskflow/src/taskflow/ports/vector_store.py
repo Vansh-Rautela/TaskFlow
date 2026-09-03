@@ -1,15 +1,14 @@
-"""Vector store port definition."""
+"""Vector store port."""
 
 from typing import Protocol
 
-from taskflow.domain.models import RetrievalResult
-from taskflow.services.retrieve.chunking import DocumentChunk
+from taskflow.domain.models import DocumentChunk, RetrievalResult
 
 
 class VectorStore(Protocol):
-    """Protocol for vector store adapters. Services depend on this."""
+    """Services depend on this; only adapters/vector implements it."""
 
-    def setup_collection(self) -> None: ...
+    def setup_collection(self, recreate: bool = False) -> None: ...
 
     def ingest(self, chunks: list[DocumentChunk], tenant_id: str) -> None: ...
 

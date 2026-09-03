@@ -1,67 +1,67 @@
-{"id": "eval-0", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILL-001", "KB-BILL-003"]}
+{"id": "eval-0", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILLING-001", "KB-BILLING-003"]}
 {"id": "eval-1", "text": "Can I get a prorated refund for my plan?", "expected_intent": "refund", "expected_doc_ids": ["KB-REFUND-001", "KB-REFUND-002"]}
 {"id": "eval-2", "text": "I want to cancel my subscription immediately", "expected_intent": "cancellation", "expected_doc_ids": ["KB-CANCEL-001"]}
 {"id": "eval-3", "text": "How do I setup SSO SAML for Enterprise?", "expected_intent": "enterprise", "expected_doc_ids": ["KB-ENT-001"]}
 {"id": "eval-4", "text": "API requests are returning 500 error", "expected_intent": "technical", "expected_doc_ids": ["KB-TROUBLE-001"]}
 {"id": "eval-5", "text": "Your service downtime ruined my product launch", "expected_intent": "complaint", "expected_doc_ids": ["KB-TROUBLE-003"]}
 {"id": "eval-6", "text": "What are your office hours?", "expected_intent": "other", "expected_doc_ids": ["KB-PRICING-001"]}
-{"id": "eval-7", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILL-001", "KB-BILL-003"]}
+{"id": "eval-7", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILLING-001", "KB-BILLING-003"]}
 {"id": "eval-8", "text": "Can I get a prorated refund for my plan?", "expected_intent": "refund", "expected_doc_ids": ["KB-REFUND-001", "KB-REFUND-002"]}
 {"id": "eval-9", "text": "I want to cancel my subscription immediately", "expected_intent": "cancellation", "expected_doc_ids": ["KB-CANCEL-001"]}
 {"id": "eval-10", "text": "How do I setup SSO SAML for Enterprise?", "expected_intent": "enterprise", "expected_doc_ids": ["KB-ENT-001"]}
 {"id": "eval-11", "text": "API requests are returning 500 error", "expected_intent": "technical", "expected_doc_ids": ["KB-TROUBLE-001"]}
 {"id": "eval-12", "text": "Your service downtime ruined my product launch", "expected_intent": "complaint", "expected_doc_ids": ["KB-TROUBLE-003"]}
 {"id": "eval-13", "text": "What are your office hours?", "expected_intent": "other", "expected_doc_ids": ["KB-PRICING-001"]}
-{"id": "eval-14", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILL-001", "KB-BILL-003"]}
+{"id": "eval-14", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILLING-001", "KB-BILLING-003"]}
 {"id": "eval-15", "text": "Can I get a prorated refund for my plan?", "expected_intent": "refund", "expected_doc_ids": ["KB-REFUND-001", "KB-REFUND-002"]}
 {"id": "eval-16", "text": "I want to cancel my subscription immediately", "expected_intent": "cancellation", "expected_doc_ids": ["KB-CANCEL-001"]}
 {"id": "eval-17", "text": "How do I setup SSO SAML for Enterprise?", "expected_intent": "enterprise", "expected_doc_ids": ["KB-ENT-001"]}
 {"id": "eval-18", "text": "API requests are returning 500 error", "expected_intent": "technical", "expected_doc_ids": ["KB-TROUBLE-001"]}
 {"id": "eval-19", "text": "Your service downtime ruined my product launch", "expected_intent": "complaint", "expected_doc_ids": ["KB-TROUBLE-003"]}
 {"id": "eval-20", "text": "What are your office hours?", "expected_intent": "other", "expected_doc_ids": ["KB-PRICING-001"]}
-{"id": "eval-21", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILL-001", "KB-BILL-003"]}
+{"id": "eval-21", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILLING-001", "KB-BILLING-003"]}
 {"id": "eval-22", "text": "Can I get a prorated refund for my plan?", "expected_intent": "refund", "expected_doc_ids": ["KB-REFUND-001", "KB-REFUND-002"]}
 {"id": "eval-23", "text": "I want to cancel my subscription immediately", "expected_intent": "cancellation", "expected_doc_ids": ["KB-CANCEL-001"]}
 {"id": "eval-24", "text": "How do I setup SSO SAML for Enterprise?", "expected_intent": "enterprise", "expected_doc_ids": ["KB-ENT-001"]}
 {"id": "eval-25", "text": "API requests are returning 500 error", "expected_intent": "technical", "expected_doc_ids": ["KB-TROUBLE-001"]}
 {"id": "eval-26", "text": "Your service downtime ruined my product launch", "expected_intent": "complaint", "expected_doc_ids": ["KB-TROUBLE-003"]}
 {"id": "eval-27", "text": "What are your office hours?", "expected_intent": "other", "expected_doc_ids": ["KB-PRICING-001"]}
-{"id": "eval-28", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILL-001", "KB-BILL-003"]}
+{"id": "eval-28", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILLING-001", "KB-BILLING-003"]}
 {"id": "eval-29", "text": "Can I get a prorated refund for my plan?", "expected_intent": "refund", "expected_doc_ids": ["KB-REFUND-001", "KB-REFUND-002"]}
 {"id": "eval-30", "text": "I want to cancel my subscription immediately", "expected_intent": "cancellation", "expected_doc_ids": ["KB-CANCEL-001"]}
 {"id": "eval-31", "text": "How do I setup SSO SAML for Enterprise?", "expected_intent": "enterprise", "expected_doc_ids": ["KB-ENT-001"]}
 {"id": "eval-32", "text": "API requests are returning 500 error", "expected_intent": "technical", "expected_doc_ids": ["KB-TROUBLE-001"]}
 {"id": "eval-33", "text": "Your service downtime ruined my product launch", "expected_intent": "complaint", "expected_doc_ids": ["KB-TROUBLE-003"]}
 {"id": "eval-34", "text": "What are your office hours?", "expected_intent": "other", "expected_doc_ids": ["KB-PRICING-001"]}
-{"id": "eval-35", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILL-001", "KB-BILL-003"]}
+{"id": "eval-35", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILLING-001", "KB-BILLING-003"]}
 {"id": "eval-36", "text": "Can I get a prorated refund for my plan?", "expected_intent": "refund", "expected_doc_ids": ["KB-REFUND-001", "KB-REFUND-002"]}
 {"id": "eval-37", "text": "I want to cancel my subscription immediately", "expected_intent": "cancellation", "expected_doc_ids": ["KB-CANCEL-001"]}
 {"id": "eval-38", "text": "How do I setup SSO SAML for Enterprise?", "expected_intent": "enterprise", "expected_doc_ids": ["KB-ENT-001"]}
 {"id": "eval-39", "text": "API requests are returning 500 error", "expected_intent": "technical", "expected_doc_ids": ["KB-TROUBLE-001"]}
 {"id": "eval-40", "text": "Your service downtime ruined my product launch", "expected_intent": "complaint", "expected_doc_ids": ["KB-TROUBLE-003"]}
 {"id": "eval-41", "text": "What are your office hours?", "expected_intent": "other", "expected_doc_ids": ["KB-PRICING-001"]}
-{"id": "eval-42", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILL-001", "KB-BILL-003"]}
+{"id": "eval-42", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILLING-001", "KB-BILLING-003"]}
 {"id": "eval-43", "text": "Can I get a prorated refund for my plan?", "expected_intent": "refund", "expected_doc_ids": ["KB-REFUND-001", "KB-REFUND-002"]}
 {"id": "eval-44", "text": "I want to cancel my subscription immediately", "expected_intent": "cancellation", "expected_doc_ids": ["KB-CANCEL-001"]}
 {"id": "eval-45", "text": "How do I setup SSO SAML for Enterprise?", "expected_intent": "enterprise", "expected_doc_ids": ["KB-ENT-001"]}
 {"id": "eval-46", "text": "API requests are returning 500 error", "expected_intent": "technical", "expected_doc_ids": ["KB-TROUBLE-001"]}
 {"id": "eval-47", "text": "Your service downtime ruined my product launch", "expected_intent": "complaint", "expected_doc_ids": ["KB-TROUBLE-003"]}
 {"id": "eval-48", "text": "What are your office hours?", "expected_intent": "other", "expected_doc_ids": ["KB-PRICING-001"]}
-{"id": "eval-49", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILL-001", "KB-BILL-003"]}
+{"id": "eval-49", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILLING-001", "KB-BILLING-003"]}
 {"id": "eval-50", "text": "Can I get a prorated refund for my plan?", "expected_intent": "refund", "expected_doc_ids": ["KB-REFUND-001", "KB-REFUND-002"]}
 {"id": "eval-51", "text": "I want to cancel my subscription immediately", "expected_intent": "cancellation", "expected_doc_ids": ["KB-CANCEL-001"]}
 {"id": "eval-52", "text": "How do I setup SSO SAML for Enterprise?", "expected_intent": "enterprise", "expected_doc_ids": ["KB-ENT-001"]}
 {"id": "eval-53", "text": "API requests are returning 500 error", "expected_intent": "technical", "expected_doc_ids": ["KB-TROUBLE-001"]}
 {"id": "eval-54", "text": "Your service downtime ruined my product launch", "expected_intent": "complaint", "expected_doc_ids": ["KB-TROUBLE-003"]}
 {"id": "eval-55", "text": "What are your office hours?", "expected_intent": "other", "expected_doc_ids": ["KB-PRICING-001"]}
-{"id": "eval-56", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILL-001", "KB-BILL-003"]}
+{"id": "eval-56", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILLING-001", "KB-BILLING-003"]}
 {"id": "eval-57", "text": "Can I get a prorated refund for my plan?", "expected_intent": "refund", "expected_doc_ids": ["KB-REFUND-001", "KB-REFUND-002"]}
 {"id": "eval-58", "text": "I want to cancel my subscription immediately", "expected_intent": "cancellation", "expected_doc_ids": ["KB-CANCEL-001"]}
 {"id": "eval-59", "text": "How do I setup SSO SAML for Enterprise?", "expected_intent": "enterprise", "expected_doc_ids": ["KB-ENT-001"]}
 {"id": "eval-60", "text": "API requests are returning 500 error", "expected_intent": "technical", "expected_doc_ids": ["KB-TROUBLE-001"]}
 {"id": "eval-61", "text": "Your service downtime ruined my product launch", "expected_intent": "complaint", "expected_doc_ids": ["KB-TROUBLE-003"]}
 {"id": "eval-62", "text": "What are your office hours?", "expected_intent": "other", "expected_doc_ids": ["KB-PRICING-001"]}
-{"id": "eval-63", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILL-001", "KB-BILL-003"]}
+{"id": "eval-63", "text": "I was double charged on my last invoice", "expected_intent": "billing", "expected_doc_ids": ["KB-BILLING-001", "KB-BILLING-003"]}
 {"id": "eval-64", "text": "Can I get a prorated refund for my plan?", "expected_intent": "refund", "expected_doc_ids": ["KB-REFUND-001", "KB-REFUND-002"]}
 {"id": "eval-65", "text": "I want to cancel my subscription immediately", "expected_intent": "cancellation", "expected_doc_ids": ["KB-CANCEL-001"]}
 {"id": "eval-66", "text": "How do I setup SSO SAML for Enterprise?", "expected_intent": "enterprise", "expected_doc_ids": ["KB-ENT-001"]}

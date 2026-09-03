@@ -1,15 +1,42 @@
 tenant_id: taskflow-demo
 
 retrieval:
+  # Model names live here, never in Python (CLAUDE.md rule 2). All three run locally
+  # through FastEmbed — no server, no API key.
+  dense_model: BAAI/bge-small-en-v1.5
+  dense_dim: 384                # must match the dense model's output dimensionality
+  sparse_model: Qdrant/bm25
+  reranker_model: Xenova/ms-marco-MiniLM-L-6-v2
+
   prefetch_k: 20          # per branch (dense, bm25) before fusion
-  rerank_k: 5             # chunks handed to the drafting model
+  candidate_k: 20         # fused candidates handed to the reranker
+  rerank_k: 5             # chunks that survive reranking and reach the drafting model
+
   chunk_target_tokens: 450
   chunk_overlap_tokens: 60
+
+  # PLACEHOLDER — pending measurement.
   alias_expansions:
     2fa: two-factor authentication
     sso: single sign-on
     api key: api token credential
     invoice: billing statement invoice
+
+pii:
+  # adapters/pii/presidio_detector.py. The model name lives here, not in Python
+  # (CLAUDE.md rule 2) — same convention as retrieval's encoder names above.
+  spacy_model: en_core_web_sm
+  # Presidio's per-entity confidence floor. Below this, PERSON in particular throws
+  # enough false positives on ordinary capitalized words to be worse than not redacting.
+  score_threshold: 0.4
+  # Known non-PII proper nouns from our own domain, at Presidio's own PERSON
+  # confidence (0.85) — a threshold change cannot fix this without also hiding real
+  # names. Measured against the KB: "AcmeFlow Workspace" is the product's own name
+  # and appears in nearly every drafted reply; left unlisted, it would fail gate G2
+  # on close to every auto-send. See docs/09_FAILURE_MODES.md if this list needs a
+  # new entry — a drafted reply repeatedly failing G2 on the same clean phrase is
+  # the symptom.
+  allow_list: [AcmeFlow, "AcmeFlow Workspace"]
 
 worker:
   claim_lease_minutes: 5  # after this, a crashed worker's message is reclaimed
@@ -21,15 +48,10 @@ pollers:
   sla_tick_s: 30
   outbox_interval_s: 5
 
-spam:
-  keywords: [free iphone, click here to claim, you have won, crypto investment, act now]
-  max_links: 5
-  min_body_chars: 10
-
-fastpath:
-  cache_ttl_s: 86400
-  normalize: [lowercase, strip_punctuation, collapse_whitespace]
-
-alerts:
-  channel: teams          # teams | fallback  (fallback = dashboard panel + email)
-  ops_email_env: OPS_EMAIL
+# Alert channels are not selected here: each one is enabled by whether its credential
+# is set in .env, and every configured channel is dispatched independently so one
+# failing does not suppress the others. The previous `channel: teams` selector was read
+# by no code — Teams was never implemented (see ADR-008).
+#   Email    -> GMAIL_USER + GMAIL_APP_PASSWORD (+ OPS_EMAIL as the default recipient)
+#   Telegram -> TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+#   Webhook  -> ALERT_WEBHOOK_URL

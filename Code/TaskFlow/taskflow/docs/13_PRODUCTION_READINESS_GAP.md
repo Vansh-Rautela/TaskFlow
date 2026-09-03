@@ -11,7 +11,7 @@ slide: it turns "what we didn't build" into a roadmap.
 | **Postgres** | SQLite is correct for one writer and one user | 1 day | concurrent workers, PITR |
 | **Qdrant server** | local mode covers ~20k points; we have ~200 | 0.5 day | larger corpora, replication |
 | **Hosted deployment** | demo is local + screen share | 3 days | anyone else using it |
-| **Gmail push (Watch → Pub/Sub → webhook)** | polling is fine at demo volume | 2 days | sub-second latency, no polling cost |
+| ~~**Gmail push (Watch → Pub/Sub → pull)**~~ | shipped — `gmail_push.py`, `GMAIL_INBOUND_MODE=push`, `make poller-push`. A pull subscription, not a webhook: no public endpoint needed, so the "no servers" posture holds. Code is unit-tested; the live path needs the GCP setup in `docs/14_GMAIL_PUSH_SETUP.md`, which only an account holder can do | — | sub-second latency, no polling cost |
 | **LLM fine-tuning** | needs a larger training set and real budget; `EditRecord` pipeline already collects the data | 1–2 weeks | better first-draft quality, fewer escalations |
 | **Scheduled retraining** | manual script demonstrates the mechanism | 1 day | continuous improvement |
 | **Real PII detection (NER)** | regex is adequate for synthetic data | 2 days | actual customer data, compliance |
@@ -27,8 +27,9 @@ slide: it turns "what we didn't build" into a roadmap.
 ## Migration path
 
 ```
-v1  local        : 2 processes · embedded Qdrant · SQLite · Ollama fallback
-v1.5 hosted      : containerize · Postgres · Qdrant server · Gmail push · secret manager
+v1  local        : 2-3 processes · embedded Qdrant · SQLite · Ollama fallback ·
+                   Gmail push available (opt-in, needs a GCP project)
+v1.5 hosted      : containerize · Postgres · Qdrant server · secret manager
 v2  production   : N API replicas · M workers · managed Postgres/Redis/Qdrant ·
                    OTel to Grafana · per-tenant isolation · load tested
 ```
@@ -42,7 +43,12 @@ new channels). **Nothing in the migration requires touching `services/`.**
 1. **Fine-tune on the collected edits.** The data pipeline exists and is populated by every
    human edit; this is the highest-leverage quality improvement available.
 2. **Calibrate the confidence score.** Today the weights are heuristics — stated as such,
-   never presented as probabilities. With a few thousand labelled outcomes, learn them.
+   never presented as probabilities. `scripts/calibrate_confidence.py` (`make calibrate`)
+   does the measurement — grid search against labeled outcomes, gates left untouched — but
+   with only a handful of real reviewed items so far it correctly reports "insufficient
+   data" rather than pretending five weights fit on that. With a few thousand labelled
+   outcomes it would have enough to actually learn them; `--source live` grows with every
+   reviewed item.
 3. **Postgres and containerization together.** One day of work that unblocks everything else.
 
 ## What I would not do

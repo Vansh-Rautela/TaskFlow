@@ -12,11 +12,12 @@ from taskflow.adapters.db.repositories import (
     SQLiteTraceRepository,
 )
 from taskflow.adapters.vector.qdrant_store import QdrantVectorStore
+from taskflow.config.settings import thresholds_config
 from taskflow.domain.enums import Channel, Intent, RouteAction
 from taskflow.domain.models import Citation, ClassificationOutput, DraftOutput, InboundMessage
 from taskflow.pipeline.orchestrator import Deps, run_pipeline
 from taskflow.services.retrieve.chunking import DocumentChunk
-from tests.fixtures.fakes import FakeLLMProvider
+from tests.fixtures.fakes import FakeLLMRouter
 
 
 @pytest.mark.asyncio
@@ -32,15 +33,18 @@ async def test_full_pipeline_auto_send_flow(tmp_path):
     review_repo = SQLiteReviewRepository(sf)
     outbox_repo = SQLiteOutboxRepository(sf)
 
-    fake_llm = FakeLLMProvider(
+    fake_llm = FakeLLMRouter(
         responses={
             "classification": ClassificationOutput(
                 intent=Intent.REFUND, confidence=0.95, reasoning="Clear refund request"
             ),
             "draft": DraftOutput(
-                response_text="Hello, we can process your prorated refund. [KB-REFUND-006:2]",
+                response_text=(
+                    "I am sorry for the trouble. We issue prorated refunds for unused "
+                    "seat licenses on annual plans upon request. [KB-REFUND-006:2]"
+                ),
                 citations=[Citation(chunk_id="KB-REFUND-006:2", doc_title="Refund Policy")],
-                tone="friendly",
+                tone="apologetic",
                 complexity="simple",
                 draft_confidence=0.92,
             ),
@@ -93,9 +97,17 @@ async def test_full_pipeline_auto_send_flow(tmp_path):
 
     decision = await run_pipeline(msg, deps)
 
-    assert decision.action == RouteAction.AUTO_SEND
+    # refund carries the strictest reachable bar in config/thresholds.yaml (0.90).
+    # Before per-intent thresholds were wired this message auto-sent against the
+    # general 0.70 bar; BRD BO-3 states that lowering the auto-send rate here is the
+    # intended direction, not a regression.
     assert decision.confidence is not None
-    assert decision.confidence.score >= 0.70
+    assert decision.confidence.threshold == thresholds_config()["thresholds"]["refund"]
+    assert decision.action == RouteAction.AUTO_SEND, (
+        f"score {decision.confidence.score:.3f} vs threshold "
+        f"{decision.confidence.threshold:.3f}; failed gates: "
+        f"{[g.gate_id.value for g in decision.confidence.failed_gates]}"
+    )
 
     # Verify trace persisted
     traces = await trace_repo.recent(limit=10)
@@ -123,7 +135,7 @@ async def test_full_pipeline_human_review_flow(tmp_path):
     review_repo = SQLiteReviewRepository(sf)
     outbox_repo = SQLiteOutboxRepository(sf)
 
-    fake_llm = FakeLLMProvider(
+    fake_llm = FakeLLMRouter(
         responses={
             "classification": ClassificationOutput(
                 intent=Intent.COMPLAINT, confidence=0.98, reasoning="Customer threat"

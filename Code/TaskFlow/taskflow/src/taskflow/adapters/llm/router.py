@@ -11,7 +11,13 @@ from taskflow.adapters.llm.claude import ClaudeProvider
 from taskflow.adapters.llm.ollama import OllamaProvider
 from taskflow.adapters.llm.openrouter import OpenRouterProvider
 from taskflow.config.settings import model_for, provider_priority, settings
-from taskflow.domain.errors import AllProvidersFailed, ProviderError, SchemaError, TransientError
+from taskflow.domain.errors import (
+    AllProvidersFailed,
+    ConfigError,
+    ProviderError,
+    SchemaError,
+    TransientError,
+)
 from taskflow.domain.models import LLMCall
 from taskflow.ports.llm import LLMProvider, LLMRouter
 
@@ -51,8 +57,20 @@ class ProviderRouter(LLMRouter):
                 logger.warning("provider_not_found", provider=provider_name)
                 continue
 
+            # A provider that declares no model for this purpose is skipped, not fatal:
+            # a configuration gap in one provider must not disable the whole chain.
+            try:
+                model_name = model_for(provider_name, purpose)
+            except ConfigError as err:
+                logger.warning(
+                    "provider_has_no_model_for_purpose",
+                    provider=provider_name,
+                    purpose=purpose,
+                )
+                last_error = err
+                continue
+
             attempts += 1
-            model_name = model_for(provider_name, purpose)
 
             try:
                 response = await provider.complete(
@@ -93,6 +111,19 @@ class ProviderRouter(LLMRouter):
                     "provider_attempt_failed",
                     provider=provider_name,
                     attempt=attempts,
+                    error=str(err),
+                )
+                last_error = err
+                continue
+            except Exception as err:
+                # An adapter raised something it should have translated. Failing over is
+                # still the right move, but the untranslated error is itself a defect,
+                # so it is logged at error level rather than absorbed quietly.
+                logger.error(
+                    "provider_raised_untranslated_error",
+                    provider=provider_name,
+                    attempt=attempts,
+                    error_type=type(err).__name__,
                     error=str(err),
                 )
                 last_error = err

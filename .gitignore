@@ -1,0 +1,28 @@
+# Repository-root ignores.
+# Paths are anchored with a leading slash so they only apply at the root —
+# Code/TaskFlow/taskflow/.claude/ holds real project rules and stays tracked.
+
+# Local AI/editor tool state
+/.crush/
+/.claude/
+/.idea/
+/.vscode/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Defence in depth: these are already ignored inside the project, but a stray
+# copy anywhere in this repo should never be committed.
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem

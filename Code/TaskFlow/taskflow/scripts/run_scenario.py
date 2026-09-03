@@ -1,99 +1,139 @@
 #!/usr/bin/env python3
-"""Run a single text string through the pipeline and print the result.
+"""Run one message through the real pipeline and print what happened and why.
 
-Usage:
-  uv run python scripts/run_scenario.py --text "I need a refund"
+Uses the same wiring as the API: real database, real retrieval, real providers.
+Nothing here is simulated — if no provider is reachable the pipeline takes its
+keyword and template fallback paths and says so.
+
+    uv run python scripts/run_scenario.py --text "I need a refund for 3 unused seats"
+    uv run python scripts/run_scenario.py --scenario refund_750
+    uv run python scripts/run_scenario.py --all
 """
 
 import argparse
 import asyncio
+import json
 import sys
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
-from taskflow.adapters.db.engine import build_engine, build_session_factory
-from taskflow.adapters.db.repositories import SQLiteTraceRepository
-from taskflow.adapters.llm.router import ProviderRouter
+from taskflow.bootstrap import runtime
+from taskflow.config.settings import settings
 from taskflow.domain.enums import Channel
 from taskflow.domain.models import InboundMessage
-from taskflow.pipeline.orchestrator import Deps, run_pipeline
+from taskflow.pipeline.orchestrator import run_pipeline
+
+# data/datasets/demo_scenarios.jsonl is the single source of truth for the named
+# scenarios — docs/12_DEMO_SCRIPT.md references the same scenario_ids. Each row also
+# carries expected_action/expected_reason_code/demo_note, which this script prints
+# but does not assert on; assertions on this exact table live in tests/e2e.
+SCENARIOS_PATH = Path(__file__).resolve().parent.parent / "data/datasets/demo_scenarios.jsonl"
 
 
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
+def _load_scenarios() -> dict[str, dict]:
+    rows = [json.loads(line) for line in SCENARIOS_PATH.read_text().splitlines() if line.strip()]
+    return {row["scenario_id"]: row for row in rows}
 
 
-async def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--text", required=True, help="The message body text to run")
-    args = parser.parse_args()
+SCENARIOS: dict[str, dict] = _load_scenarios()
 
-    print("--- Running scenario ---")
-    print(f"Message: {args.text}")
 
-    # 1. Setup Dependencies
-    # Connect to the actual SQLite DB initialized in Phase P1
-    db_url = "sqlite+aiosqlite:///./data/taskflow.db"
-    engine = build_engine(db_url)
-    factory = build_session_factory(engine)
-
-    llm_router = ProviderRouter()
-
-    trace_repo = SQLiteTraceRepository(factory)
-    deps = Deps(trace_repo=trace_repo, llm_router=llm_router)
-
-    # 2. Inbound Message Construction
+async def run_one(rt, label: str, text: str, demo_note: str | None = None) -> str:
     msg_id = uuid.uuid4().hex[:8]
     msg = InboundMessage(
         message_id=msg_id,
-        dedupe_key=f"console:{msg_id}",
-        tenant_id="taskflow-demo",
+        dedupe_key=InboundMessage.make_dedupe_key(Channel.CONSOLE, msg_id),
+        tenant_id=settings().taskflow_tenant_id,
         channel=Channel.CONSOLE,
-        sender="custom_query_user",
-        subject=None,
-        body_text=args.text,
-        body_redacted=args.text,
+        sender="scenario-runner@taskflow.local",
+        subject=label,
+        body_text=text,
+        body_redacted=text,
         provider_message_id=f"sim-{msg_id}",
-        received_at=_utcnow(),
+        received_at=datetime.now(UTC),
     )
 
-    # 3. Run Pipeline
-    try:
-        decision = await run_pipeline(msg, deps)
+    decision = await run_pipeline(msg, rt.deps)
 
-        trace = (await trace_repo.recent(limit=1))[0]
+    trace = (await rt.trace_repo.recent(limit=1))[0]
 
-        print("\n=================== PIPELINE EXECUTION RESULT ===================")
-        print(f"📌 Message ID:    {msg_id}")
-        print(f"🎯 Action Taken:  [{decision.action.value.upper()}]")
-        print(f"💡 Reason:        {decision.reason}")
-        print(f"🏷️  Reason Code:   {decision.reason_code}")
-        print(f"🏷️  Intent:        {trace.intent.value if trace.intent else 'N/A'} (Confidence: {trace.intent_confidence:.2f})")
-        if decision.confidence:
-            print(f"📊 Final Score:   {decision.confidence.score:.3f} (Threshold: {decision.confidence.threshold:.3f})")
-            failed_gates = decision.confidence.failed_gates
-            if failed_gates:
-                print(f"🛡️  Failed Gates:  {[g.gate_id.value for g in failed_gates]}")
-            else:
-                print("🛡️  Safety Gates:  All 7 Conjunctive Veto Gates Passed (CLEAR)")
+    print(f"\n{'=' * 78}")
+    print(f" SCENARIO: {label}")
+    print(f"{'=' * 78}")
+    if demo_note:
+        print(f" Proves:       {demo_note}")
+    print(f" Message:      {text}")
+    print(f" Action:       {decision.action.value.upper()}")
+    print(f" Reason:       {decision.reason}")
+    print(f" Reason code:  {decision.reason_code}")
+    print(
+        f" Intent:       {trace.intent.value if trace.intent else 'n/a'} "
+        f"(confidence {trace.intent_confidence or 0:.2f})"
+    )
 
-        if trace.draft:
-            print("\n🤖 GENERATED DRAFT RESPONSE:")
-            print("-" * 75)
-            print(trace.draft.response_text)
-            print("-" * 75)
-            if trace.draft.citations:
-                print(f"📚 Citations:     {[f'{c.doc_title} [{c.chunk_id}]' for c in trace.draft.citations]}")
+    if decision.confidence:
+        c = decision.confidence
+        print(f" Score:        {c.score:.3f}  (threshold {c.threshold:.3f})")
+        print(
+            " Signals:      "
+            + ", ".join(
+                f"{k}={v:.2f}"
+                for k, v in {
+                    "citations": c.citation_coverage,
+                    "grounding": c.grounding_entailment,
+                    "retrieval": c.retrieval_relevance,
+                    "intent": c.intent_confidence,
+                    "tone": c.tone_alignment,
+                }.items()
+            )
+        )
+        failed = c.failed_gates
+        print(
+            f" Gates:        {'ALL PASSED' if not failed else 'FAILED: ' + ', '.join(g.gate_id.value for g in failed)}"
+        )
 
-        print(f"💳 LLM Cost:      ${sum(c.cost_usd for c in trace.llm_calls):.6f} USD")
-        print(f"🔍 Trace ID:      {trace.trace_id}")
-        print("=================================================================\n")
+    if trace.retrieval:
+        print(
+            f" Retrieval:    {len(trace.retrieval.chunks)} chunks, "
+            f"top={trace.retrieval.top_score:.3f}, sufficient={trace.retrieval.sufficient}"
+        )
 
-    except Exception as e:
-        print(f"\nERROR: {e}")
-        return 1
-    finally:
-        await engine.dispose()
+    if trace.draft:
+        print("\n Draft:")
+        for line in trace.draft.response_text.splitlines():
+            print(f"   {line}")
+        if trace.draft.citations:
+            print(f" Citations:    {', '.join(c.chunk_id for c in trace.draft.citations)}")
+
+    print(
+        f"\n Cost:         ${sum(c.cost_usd for c in trace.llm_calls):.6f} "
+        f"over {len(trace.llm_calls)} LLM call(s)"
+    )
+    print(f" Trace:        {trace.trace_id}")
+    if trace.errors:
+        print(f" Errors:       {trace.errors}")
+
+    return decision.action.value
+
+
+async def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--text", help="an arbitrary message body")
+    group.add_argument("--scenario", choices=sorted(SCENARIOS), help="a named scenario")
+    group.add_argument("--all", action="store_true", help="run every named scenario")
+    args = parser.parse_args()
+
+    async with runtime() as rt:
+        if args.all:
+            for label, row in SCENARIOS.items():
+                await run_one(rt, label, row["text"], row.get("demo_note"))
+        elif args.scenario:
+            row = SCENARIOS[args.scenario]
+            await run_one(rt, args.scenario, row["text"], row.get("demo_note"))
+        else:
+            await run_one(rt, "ad-hoc", args.text)
 
     return 0
 

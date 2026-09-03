@@ -4,10 +4,15 @@ Formats retrieved Knowledge Base chunks into prompt context and uses LLMRouter t
 tailored support responses with explicit citations [chunk_id].
 """
 
+import structlog
+
 from taskflow.config.settings import thresholds_config
 from taskflow.domain.enums import Intent
-from taskflow.domain.models import Citation, DraftOutput, InboundMessage, LLMCall, RetrievalResult
+from taskflow.domain.errors import AllProvidersFailed, ProviderError, TransientError
+from taskflow.domain.models import DraftOutput, InboundMessage, LLMCall, RetrievalResult
 from taskflow.ports.llm import LLMRouter
+
+logger = structlog.get_logger()
 
 SYSTEM_PROMPT = """You are an expert customer support agent writing a professional email response.
 Follow these strict guidelines:
@@ -38,11 +43,15 @@ async def generate_draft(
     retrieval: RetrievalResult,
     router: LLMRouter,
 ) -> tuple[DraftOutput, LLMCall | None]:
-    """Generate a context-grounded response draft using LLMRouter."""
+    """Generate a context-grounded response draft using LLMRouter.
+
+    Only ``msg.body_redacted`` is ever placed in the prompt. The raw ``body_text``
+    must not reach a provider — see BRD NFR-3.1 and R-1.
+    """
     context_text = _format_context(retrieval)
 
     user_prompt = f"""Customer Message:
-{msg.body_text}
+{msg.body_redacted}
 
 Detected Intent: {intent.value}
 
@@ -58,20 +67,26 @@ Knowledge Base Context:
             schema=DraftOutput,
         )
         return draft, _call
-    except Exception:
-        # Fall back to a safe template draft when LLM providers fail or are unconfigured.
-        # Quality gates will automatically route this to HUMAN_REVIEW.
-        first_chunk = retrieval.chunks[0].chunk if (retrieval and retrieval.chunks) else None
-        citations: list[Citation] = []
-        citation_ref = ""
-        if first_chunk:
-            citations = [Citation(chunk_id=first_chunk.chunk_id, doc_title=first_chunk.title)]
-            citation_ref = f" [{first_chunk.chunk_id}]"
+    except (AllProvidersFailed, ProviderError, TransientError) as err:
+        # Every provider failed. Produce a holding reply so the message keeps moving,
+        # and return None for the LLMCall — the caller uses that to tell the gates
+        # that no model actually answered, so this must never auto-send.
+        #
+        # It carries NO citations. The previous version attached the first retrieved
+        # chunk, which earned this stub a perfect citation-coverage score for
+        # material it had not used; combined with the general threshold that was
+        # enough to auto-send a content-free reply to a customer.
+        logger.warning(
+            "draft_llm_failed_using_template_fallback", intent=intent.value, error=str(err)
+        )
 
         return DraftOutput(
-            response_text=f"Thank you for reaching out regarding your {intent.value} request.{citation_ref} Our support team has logged this request.",
-            citations=citations,
+            response_text=(
+                f"Thank you for contacting us about your {intent.value} request. "
+                "A member of our support team is reviewing it and will reply shortly."
+            ),
+            citations=[],
             tone="friendly",
             complexity="simple",
-            draft_confidence=thresholds_config()["fallback_confidences"].get("draft", 0.50),
+            draft_confidence=float(thresholds_config()["fallback_confidences"].get("draft", 0.50)),
         ), None

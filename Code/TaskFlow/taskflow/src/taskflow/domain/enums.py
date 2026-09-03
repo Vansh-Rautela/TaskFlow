@@ -37,6 +37,7 @@ class GateId(StrEnum):
     G5_ABSTAIN = "G5_classifier_confident"
     G6_VALIDATORS = "G6_validators_healthy"
     G7_INJECTION = "G7_no_suspicious_context"
+    G8_DRAFT_SOURCE = "G8_draft_model_generated"
 
 
 class ReviewState(StrEnum):

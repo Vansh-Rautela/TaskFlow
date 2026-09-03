@@ -8,11 +8,13 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class ProviderCapabilities(BaseModel):
+    """What a provider can do. Pricing is deliberately absent: it lives in
+    config/providers.yaml and is read via services.cost, so there is exactly one
+    number per provider rather than one in config and one in code."""
+
     supports_json_schema: bool
     supports_tools: bool
     max_context: int
-    price_in_per_1k: float = 0.0
-    price_out_per_1k: float = 0.0
 
 
 class LLMResponse(BaseModel):

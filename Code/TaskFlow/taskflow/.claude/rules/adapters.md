@@ -1,24 +1,16 @@
----
-paths:
-  - "src/taskflow/adapters/bus"
-  - "src/taskflow/adapters/cache"
-  - "src/taskflow/adapters/channels"
-  - "src/taskflow/adapters/db"
-  - "src/taskflow/adapters/llm"
-  - "src/taskflow/adapters/resilience"
-  - "src/taskflow/adapters/vector"
----
 # Adapters are the only place SDKs live
 
 This layer implements a Protocol from `taskflow.ports` and nothing else. Rules:
 
-- Every outbound network call is wrapped in `@circuit_breaker` with a named breaker and a
-  fallback documented in `docs/09_FAILURE_MODES.md`.
-- Never catch bare `Exception`. Translate SDK errors into `taskflow.domain.errors` types
-  so services stay SDK-agnostic.
-- Model names, base URLs and timeouts come from `config/providers.yaml` via settings —
-  never as literals in this code.
-- Every adapter has an integration test marked `@pytest.mark.integration`.
-- LLM adapters must handle the two structured-output failure cases explicitly:
-  a refusal stop reason and a max_tokens stop reason both raise `SchemaError`, which
-  triggers fallback to the next provider.
+- Never catch bare `Exception` to hide a failure. Translate SDK errors into
+  `taskflow.domain.errors` types so services stay SDK-agnostic. `TransientError` means
+  "retrying may help"; `ConfigError` means "retrying will not".
+- Model names, base URLs, timeouts and prices come from `config/*.yaml` via settings —
+  never as literals in this code. An adapter must not carry its own price list.
+- An adapter reports what it observed, not what it means. Deciding whether a retrieval
+  was *sufficient*, or whether a failure is *fatal*, belongs to a service.
+- A method that performs an action either returns proof of it or raises. Never return a
+  bare `True` on a path that did not do the work.
+- LLM adapters must handle the two structured-output failure cases explicitly: a refusal
+  stop reason and a max_tokens stop reason both raise `SchemaError`, which triggers
+  fallback to the next provider.

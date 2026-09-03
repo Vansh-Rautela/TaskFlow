@@ -26,7 +26,7 @@ for a hard case is an escalation, not a confident guess.
 Ingest (Gmail poll, web chat, console) → deduplicate → redact PII → spam filter →
 FAQ fast path → classify intent (trained classifier, can abstain) → hybrid retrieval
 (dense + BM25 + RRF + rerank) → sufficiency check → draft (Claude, falling back to a
-local model) → five validators in parallel → **seven conjunctive gates** → weighted score
+local model) → validators in parallel → **eight conjunctive gates** → weighted score
 against a per-intent threshold → auto-send or human review → approve/edit/reject →
 send exactly once → trace everything.
 

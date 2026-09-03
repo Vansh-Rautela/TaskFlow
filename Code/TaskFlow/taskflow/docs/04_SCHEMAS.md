@@ -11,7 +11,7 @@ through a pipeline where accidental mutation is the most annoying class of bug t
 
 | Enum | Values |
 |---|---|
-| `Channel` | email, slack *(unused in v2)*, console — plus `webchat` |
+| `Channel` | email, webchat, console |
 | `Intent` | billing, technical, account, feature_request, refund, complaint, general, **unknown** |
 | `RouteAction` | auto_send, human_review, template_sent, rejected_spam, dropped_duplicate |
 | `GateId` | G1_policy_critical, G2_pii_leak, G3_citations_resolve, G4_intent_allows_auto, G5_classifier_confident, G6_validators_healthy, G7_no_suspicious_context |
@@ -29,13 +29,26 @@ thread_ref?, provider_message_id, provider_thread_headers, received_at, raw_ref?
 `dedupe_key = f"{channel}:{provider_message_id}"`. **`body_redacted` is what reaches any
 model** — `body_text` is stored for the reviewer only.
 
-**`Chunk`** — `chunk_id, doc_id, title, section?, text, doc_type, product_tier?, intents[],
-version, source_path, tenant_id`.
-`doc_id = sha256(relpath + "\n" + title)[:16]`, `chunk_id = f"{doc_id}:{ordinal}"`.
-Deterministic ids make re-ingestion idempotent.
+**`Chunk`** — `chunk_id, doc_id, title, section?, text, version, source_path, tenant_id`.
+`doc_id = sha256(relpath + "\n" + title)[:16]` unless the source document declares its own
+in frontmatter, `chunk_id = f"{doc_id}:{ordinal}"`. Deterministic ids make re-ingestion
+idempotent — though only an upsert: `ingest_kb.py --recreate` is what clears chunks whose
+source no longer produces them.
 
-**`ScoredChunk`** — a `Chunk` plus `dense_score?, sparse_score?, rrf_score?, rerank_score?`.
-All four are persisted so the trace can show where a chunk came from.
+`text` is what the drafting model reads and cites. It is *not* what was embedded: ingestion
+prefixes the title and section heading before encoding, so a chunk carries the context its
+heading gave it (`adapters/vector/qdrant_store.embedding_text`).
+
+**`ScoredChunk`** — a `Chunk` plus `rrf_score?, rerank_score?`.
+`rrf_score` is a fusion **rank** score: it records where the two retrievers agreed the chunk
+sat, and carries no magnitude — its top value is identical whether the best candidate was a
+perfect answer or the least bad of twenty irrelevant ones. `rerank_score` is the
+cross-encoder's calibrated 0-1 relevance. `final_score` prefers the latter, which is what
+lets `min_top_score` in `thresholds.yaml` mean something.
+
+There are no `dense_score` / `sparse_score` fields. Fusion happens inside the vector store
+(ADR: avoid pulling two candidate lists into Python), so the per-branch scores never reach
+the client and the fields were never populated.
 
 **`RetrievalResult`** — `query_used, chunks[], sufficient, gap_reason?, suspicious_context,
 latency_ms, top_score, support_count`.

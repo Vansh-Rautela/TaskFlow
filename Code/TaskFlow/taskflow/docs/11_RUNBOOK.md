@@ -23,15 +23,26 @@ First Gmail run opens a browser for OAuth consent and writes `secrets/token.json
 make api      # http://localhost:8000  (chat widget at /chat)
 # terminal 2
 make dash     # http://localhost:8501
+# terminal 3 (optional — only if you want live inbound email)
+make poller   # Gmail IMAP poller; posts to the API, doesn't touch Qdrant itself
 ```
 
 Ollama must be running (`ollama serve`, or the desktop app). `make preflight` checks it.
+
+`make poller` must be started **after** `make api` is already up: it posts every
+inbound message to the API's `/messages` endpoint rather than running the pipeline
+itself, specifically so it never opens its own handle on the embedded Qdrant store
+(`data/qdrant/`, which only tolerates one writer — see the "Storage folder already
+accessed" row below). Until the API is reachable, every poll attempt fails and
+retries on the next interval; nothing is lost, `poll_once` just returns 0. See
+`docs/14_GMAIL_PUSH_SETUP.md` for the lower-latency push alternative.
 
 ## Common problems
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `database is locked` | WAL pragma listener not attached | check `adapters/db/engine.py`; only the API process writes |
+| `Storage folder ./data/qdrant is already accessed by another instance` | a second process opened its own embedded `QdrantClient` | only the API should ever construct `QdrantVectorStore`; `make poller`/`make worker`/`make sla` all run with `with_vector_store=False` or post to the API instead — check `bootstrap.build_runtime` callers before adding a new one |
 | Qdrant returns 0 results | wrong `tenant_id` filter, or an unindexed payload field | create the payload index; log the filter |
 | Sparse branch always empty | collection built without `modifier=IDF`, or a different model string at query time | delete `data/qdrant/`, `make ingest` |
 | Every draft fails validation | citation markers missing from `response_text` | check the drafting prompt's citation instruction |

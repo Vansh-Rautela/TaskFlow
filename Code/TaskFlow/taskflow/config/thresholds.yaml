@@ -20,23 +20,34 @@ gates:
   min_grounding_ratio: 0.80
   max_unsupported_claims: 0
 
+# Confidence assigned by the deterministic keyword classifier when the LLM path is
+# unavailable. These are deliberately at or below the G5 abstain threshold for every
+# intent whose keywords are weak evidence: a keyword match is not a classification.
 fallback_confidences:
-  refund: 0.95
-  billing: 0.90
-  technical: 0.85
-  cancel: 0.90
-  account: 0.88
-  complaint: 0.98
+  complaint: 0.80        # unambiguous language; G4 blocks the intent anyway
+  refund: 0.70
+  billing: 0.65
+  account: 0.65
+  technical: 0.60
+  feature_request: 0.55
   unknown: 0.40
-  draft: 0.50
+  draft: 0.50            # confidence stamped on the template fallback draft
+
+# Tone alignment signal (services/confidence/tone.py). Warning-severity policy
+# violations reduce the tone score; they never block on their own.
+tone:
+  warning_penalty: 0.25          # subtracted per warning-severity policy violation
+  intent_mismatch_penalty: 0.30  # subtracted when an upset intent gets a non-acknowledging tone
 
 citation_validation_threshold: 0.70
 
+# Retrieval sufficiency. These are thresholds on the reranker's calibrated relevance
+# (0-1), not on the fusion rank score — RRF only encodes rank position, so a threshold
+# on it could not tell a strong match from a weak one. Sizing knobs (prefetch_k,
+# rerank_k, model names) live in settings.yaml; only the decision boundaries live here.
 retrieval:
-  prefetch_k: 20
-  rerank_k: 5
-  min_top_score: 0.35
-  min_support_score: 0.20
+  min_top_score: 0.55       # the best chunk must clear this to count as an answer
+  min_support_score: 0.20   # a chunk at or above this counts toward support
   min_support_count: 2
 
 sla_minutes: {default: 120, complaint: 60, refund: 60}

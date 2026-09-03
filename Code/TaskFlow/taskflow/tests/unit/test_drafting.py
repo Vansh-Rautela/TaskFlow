@@ -29,7 +29,6 @@ def sample_retrieval():
         title="Refund Policy",
         section="30-Day Limit",
         text="Standard 30-day refund policy applies to annual subscriptions.",
-        doc_type="policy",
         version="1.0",
         source_path="",
         tenant_id="test",
@@ -128,7 +127,7 @@ async def test_pii_validator_detect_cc():
 async def test_pii_validator_detect_secret_key():
     """PII validator fails when secret API key is present."""
     draft = DraftOutput(
-        response_text="Use secret key sk_live_99887766554433221100abc for auth.",
+        response_text="Use secret key sk_notarealkey_0000000000000000 for auth.",
         citations=[],
         tone="friendly",
         complexity="simple",
