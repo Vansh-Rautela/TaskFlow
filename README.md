@@ -7,8 +7,8 @@ This repository holds an internship project: **TaskFlow**, an autonomous email s
 **Start there.** That directory has its own full README covering the architecture, a quick start, the decision engine, measured results, and the complete documentation set.
 
 ```bash
-git clone https://github.com/Vansh-Rautela/TaskFlow-.git
-cd TaskFlow-/Code/TaskFlow/taskflow
+git clone https://github.com/Vansh-Rautela/TaskFlow.git
+cd TaskFlow/Code/TaskFlow/taskflow
 cat README.md
 ```
 

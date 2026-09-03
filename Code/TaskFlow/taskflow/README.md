@@ -49,8 +49,8 @@ Most "AI agent" demos show you the happy path: the model writes something plausi
 ## Quick start
 
 ```bash
-git clone https://github.com/Vansh-Rautela/TaskFlow-.git
-cd TaskFlow-/Code/TaskFlow/taskflow
+git clone https://github.com/Vansh-Rautela/TaskFlow.git
+cd TaskFlow/Code/TaskFlow/taskflow
 
 cp .env.example .env               # fill in an LLM provider key at minimum
 make setup                         # uv sync + migrate + ingest the knowledge base
