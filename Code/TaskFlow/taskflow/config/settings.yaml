@@ -1,7 +1,7 @@
 tenant_id: taskflow-demo
 
 retrieval:
-  # Model names live here, never in Python (CLAUDE.md rule 2). All three run locally
+  # Model names live here, never in Python (ADR-004). All three run locally
   # through FastEmbed — no server, no API key.
   dense_model: BAAI/bge-small-en-v1.5
   dense_dim: 384                # must match the dense model's output dimensionality
@@ -24,7 +24,7 @@ retrieval:
 
 pii:
   # adapters/pii/presidio_detector.py. The model name lives here, not in Python
-  # (CLAUDE.md rule 2) — same convention as retrieval's encoder names above.
+  # (ADR-004) — same convention as retrieval's encoder names above.
   spacy_model: en_core_web_sm
   # Presidio's per-entity confidence floor. Below this, PERSON in particular throws
   # enough false positives on ordinary capitalized words to be worse than not redacting.

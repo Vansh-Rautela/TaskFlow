@@ -2,11 +2,16 @@
 # Paths are anchored with a leading slash so they only apply at the root —
 # Code/TaskFlow/taskflow/.claude/ holds real project rules and stays tracked.
 
-# Local AI/editor tool state
+# Local tooling and editor state — kept out of the repository
 /.crush/
-/.claude/
+.claude/
+.agents/
 /.idea/
 /.vscode/
+CLAUDE.md
+AGENTS.md
+opencode.json
+/Guide/
 
 # OS noise
 .DS_Store

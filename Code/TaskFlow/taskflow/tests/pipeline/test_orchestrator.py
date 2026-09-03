@@ -184,7 +184,7 @@ async def test_duplicate_message_is_dropped_before_any_work(deps):
 
 @pytest.mark.asyncio
 async def test_trace_events_carry_real_payloads(deps):
-    """BRD BO-2 / CLAUDE.md rule 10.
+    """BRD BO-2 / the trace-payload rule (docs/08_OBSERVABILITY.md).
 
     Stage events used to persist `payload={}`, so a trace recorded how long each
     stage took and nothing about what it decided.

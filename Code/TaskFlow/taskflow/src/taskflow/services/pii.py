@@ -7,7 +7,7 @@ pattern added to one silently left the other blind to it.
 
 Pure Python, no vendor SDK — this is what makes `RegexPIIDetector` usable directly
 from `services/`, which `adapters.pii.PresidioDetector` (named-entity recognition on
-top of these fixed formats) cannot be: CLAUDE.md rule 1 keeps a vendor SDK out of
+top of these fixed formats) cannot be: the layering rule keeps a vendor SDK out of
 this layer, full stop. See `ports.pii.PIIDetector` for how the two relate.
 """
 

@@ -19,7 +19,7 @@ No Docker. No hosted services. No server to stand up. Embedded vector search and
 ## Contents
 
 - [Why this is interesting](#why-this-is-interesting)
-- [Quick start](#quick-start)
+- [Getting started](#getting-started)
 - [Architecture](#architecture)
 - [The pipeline](#the-pipeline)
 - [The decision engine](#the-decision-engine)
@@ -46,31 +46,156 @@ Most "AI agent" demos show you the happy path: the model writes something plausi
 
 ---
 
-## Quick start
+## Getting started
+
+### 1. Prerequisites
+
+| Requirement | Why | Notes |
+|---|---|---|
+| **Python 3.12** | The project pins `>=3.12,<3.13` | 3.13 is unsupported — some ML wheels have no 3.13 build yet |
+| **[uv](https://docs.astral.sh/uv/)** | Dependency and virtualenv management | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| **One LLM provider** | Classification and drafting | An OpenRouter or Anthropic key, **or** [Ollama](https://ollama.com) running locally. Not both — either is enough |
+| Gmail account | Only if you want real email in/out | Optional. The pipeline runs fully without it |
+
+Everything else — the vector store, the database, the embedding and reranking models — installs and runs locally. There is nothing to provision.
+
+### 2. Clone and configure
 
 ```bash
 git clone https://github.com/Vansh-Rautela/TaskFlow.git
 cd TaskFlow/Code/TaskFlow/taskflow
-
-cp .env.example .env               # fill in an LLM provider key at minimum
-make setup                         # uv sync + migrate + ingest the knowledge base
-make preflight                     # must exit 0
+cp .env.example .env
 ```
 
-```bash
-# terminal 1 — start this first, it's the only process that opens the vector store
-make api        # FastAPI :8000
+Open `.env`. The only values you *must* set are an API token of your own choosing and one LLM provider:
 
-# terminal 2
-make dash       # Streamlit operator console :8501
+```ini
+# Any string you like — the API rejects requests without it
+TASKFLOW_API_TOKEN=pick-any-secret-string
+
+# cloud_first tries OpenRouter, then Anthropic, then falls back to local Ollama.
+# local_only skips the cloud entirely and needs no API key at all.
+TASKFLOW_LLM_MODE=cloud_first
+OPENROUTER_API_KEY=sk-or-...
 ```
 
+<details>
+<summary><strong>Running with no API key at all</strong></summary>
+
+Install [Ollama](https://ollama.com), pull a model, and switch the mode:
+
 ```bash
-# see it decide something, no daemons required
+ollama pull qwen2.5:7b-instruct
+```
+
+```ini
+TASKFLOW_LLM_MODE=local_only
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+Everything works — classification, retrieval, drafting, gates, scoring, delivery. Drafts are noticeably slower and lower quality than a cloud model, which the gates tend to catch, so expect more items to land in the review queue.
+</details>
+
+<details>
+<summary><strong>Optional: connecting a real Gmail inbox</strong></summary>
+
+```ini
+GMAIL_USER=your-support-address@gmail.com
+GMAIL_APP_PASSWORD=your-16-char-app-password   # a Google App Password, not your login
+GMAIL_INBOUND_MODE=poll                        # or "push" — see docs/14
+```
+
+`GMAIL_APP_PASSWORD` requires 2FA on the Google account and an [App Password](https://support.google.com/accounts/answer/185833). `poll` checks the inbox every 15–30s and needs nothing else. `push` is near-instant but requires a one-time Google Cloud setup — the full walkthrough is in [`docs/14_GMAIL_PUSH_SETUP.md`](docs/14_GMAIL_PUSH_SETUP.md).
+</details>
+
+### 3. Install and build the knowledge base
+
+```bash
+make setup
+```
+
+This runs three things: `uv sync` to install dependencies (including the local embedding, reranking, and PII models — the first run downloads a few hundred MB), `alembic upgrade head` to create the database, and `scripts/ingest_kb.py` to chunk and embed the 42 knowledge-base documents into the vector store.
+
+### 4. Check it actually works
+
+```bash
+make preflight
+```
+
+Nine checks: scoring weights sum to 1.0, per-intent thresholds are present, the API token is set, the database is migrated and readable, SMTP is configured (if you set it up), the knowledge base is indexed and returns results, and at least one LLM provider is reachable. **It must exit 0 before anything else is worth trying.** Each failure names the thing to fix.
+
+### 5. Watch it make a decision
+
+The fastest way to see the whole pipeline work, with no servers running:
+
+```bash
 uv run python scripts/run_scenario.py --scenario billing_payment_methods
 ```
 
-Full command reference, every optional service, and a from-scratch walkthrough are in [Running the full stack](#running-the-full-stack).
+That question is answerable from the knowledge base, so it should clear every gate and auto-send. Now try one that shouldn't:
+
+```bash
+uv run python scripts/run_scenario.py --scenario refund_750
+```
+
+A $750 refund trips the policy gate and is routed to a human — and the output shows the gate that stopped it, the score it would have had, and the threshold it was measured against. That contrast is the whole point of the system.
+
+```bash
+uv run python scripts/run_scenario.py --all      # all seven scenarios
+```
+
+### 6. Start the services
+
+The API **must** start first — it is the only process allowed to open the embedded vector store, and a second process opening it will fail on the file lock.
+
+```bash
+# terminal 1 — required
+make api          # FastAPI on :8000
+
+# terminal 2 — the operator console
+make dash         # Streamlit on :8501
+```
+
+Open **http://localhost:8501** for the review queue, trace explorer, and metrics. Then send something through the live API:
+
+```bash
+curl -X POST http://localhost:8000/messages \
+  -H "Authorization: Bearer $TASKFLOW_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message_id":"demo-1","channel":"email","sender":"customer@example.com",
+       "subject":"Payment methods","body_text":"What payment methods do you support?"}'
+```
+
+The reply tells you the routing decision and why. Whatever happened is now visible in the dashboard's Trace Explorer.
+
+<details>
+<summary><strong>Optional background services</strong></summary>
+
+```bash
+make worker        # delivers approved and auto-sent replies over SMTP
+make poller        # Gmail IMAP polling  (or: make poller-push)
+make sla           # auto-escalates review items past their deadline
+```
+
+None are needed to see the pipeline work. `make worker` is what actually puts mail in someone's inbox — without it, auto-sent replies sit in the outbox queue.
+</details>
+
+### Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| `preflight` fails on "at least one LLM provider" | No API key set and Ollama isn't running. Set a key or start Ollama |
+| `Storage folder ... already accessed by another instance` | Two processes are trying to open the vector store. Only the API may — start it first, and don't run `run_scenario.py` while it's up |
+| `preflight` fails on "knowledge base indexed" | Ingestion didn't run. `make ingest` |
+| Everything routes to human review | Expected on `local_only` with a small model, or if the question isn't covered by the billing knowledge base. Check the reason code in the trace |
+| `TASKFLOW_API_TOKEN is not set` from the API | The API refuses to serve protected endpoints without a token. Set one in `.env` |
+
+### Resetting
+
+```bash
+rm data/taskflow.db && make migrate      # clear all traces, reviews, and queued mail
+rm -rf data/qdrant && make ingest        # rebuild the vector store from the documents
+```
 
 ---
 

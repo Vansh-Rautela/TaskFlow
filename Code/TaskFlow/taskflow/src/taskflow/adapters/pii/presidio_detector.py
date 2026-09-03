@@ -15,7 +15,7 @@ patterns, the same ones `RegexPIIDetector` uses, at a high fixed score, so these
 three formats behave at least as well here as they already did without Presidio.
 
 Implements `ports.pii.PIIDetector`. Model name and score threshold come from
-`config/settings.yaml`'s `pii` block (CLAUDE.md rule 2) — never hardcoded here.
+`config/settings.yaml`'s `pii` block (ADR-004, configuration over code) — never hardcoded here.
 """
 
 from typing import cast

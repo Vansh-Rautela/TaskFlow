@@ -60,7 +60,7 @@ def test_safety_critical_unique_constraints_survive_migration(migrated_inspector
 
 
 def test_every_table_carries_a_tenant_id(migrated_inspector):
-    """CLAUDE.md rule 9."""
+    """Every persisted row carries a tenant_id (see ADR-004 and the migration rules)."""
     for table in sorted(set(migrated_inspector.get_table_names()) - {"alembic_version"}):
         columns = {c["name"] for c in migrated_inspector.get_columns(table)}
         assert "tenant_id" in columns, f"{table} has no tenant_id column"

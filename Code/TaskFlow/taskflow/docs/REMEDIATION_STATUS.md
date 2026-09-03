@@ -142,7 +142,7 @@ Every `Fixed` row names a test or command that demonstrates the corrected behavi
 | CLEAN-014 | `asyncio_wrap`, a no-op coroutine wrapper, existed to make a synchronous call look asynchronous | Low | `pipeline/orchestrator.py` | Deleted | code review |
 | CLEAN-015 | `PipelineState.thresholds` was declared "Expected to be populated inside pipeline" and never was | Low | `pipeline/state.py` | Deleted | `mypy` |
 | CLEAN-016 | `settings.teams_webhook_url` and `alerts.channel: teams` were configured; no code sends to Teams | Low | `config/settings.py`, `.env.example` | Removed | grep: 0 usages |
-| CLEAN-017 | `CLAUDE.md` stated "Phase P0 — nothing implemented except `domain/` and `ports/`", and the adapter rules required a `@circuit_breaker` decorator that does not exist | Medium | `CLAUDE.md`, `.claude/rules/` | Rewritten to match the code | review |
+| CLEAN-017 | Project documentation stated "Phase P0 — nothing implemented except `domain/` and `ports/`", and the adapter rules required a `@circuit_breaker` decorator that does not exist | Medium | project docs | Rewritten to match the code | review |
 | CLEAN-018 | `README.md` described an empty project kit — "green on an empty project", "P1 is mostly persistence" | Medium | `README.md` | Rewritten for the built system | review |
 
 ### Quality gates

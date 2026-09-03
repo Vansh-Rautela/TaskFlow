@@ -1,10 +1,12 @@
-# TaskFlow — Internship Project Repository
+# TaskFlow
 
-This repository holds an internship project: **TaskFlow**, an autonomous email support agent that drafts replies from a knowledge base and decides — through eight safety gates and a quality score — whether it is allowed to send them without a human.
+**An autonomous email support agent that knows when *not* to trust itself.**
+
+TaskFlow reads a customer support email, classifies it, retrieves the relevant policy from a knowledge base, and drafts a cited reply. Before that reply can be sent automatically it has to pass eight deterministic safety gates and clear a quality score. Anything that fails either goes to a human, with the reasoning attached.
 
 ## → The project lives in [`Code/TaskFlow/taskflow/`](Code/TaskFlow/taskflow/)
 
-**Start there.** That directory has its own full README covering the architecture, a quick start, the decision engine, measured results, and the complete documentation set.
+**Start there.** That directory has the full README: architecture, getting started, the decision engine, measured results, and the complete documentation set.
 
 ```bash
 git clone https://github.com/Vansh-Rautela/TaskFlow.git
@@ -16,9 +18,9 @@ cat README.md
 
 | Path | What it is |
 |---|---|
-| [`Code/TaskFlow/taskflow/`](Code/TaskFlow/taskflow/) | **The system.** Source, tests, configuration, and all project documentation. |
-| `Code/Data/Documents/synthetic-saas-kb/` | The synthetic knowledge base and evaluation queries the system is built and measured against. 42 documents, 478 labelled evaluation queries, all written for this project. No real customer data. |
-| `Code/IMPLEMENTATION_PLAN.md`, `Code/Design/`, `Guide/` | Planning and context notes written during the project. |
+| [`Code/TaskFlow/taskflow/`](Code/TaskFlow/taskflow/) | **The system.** Source, tests, configuration, and all documentation. |
+| `Code/Data/Documents/synthetic-saas-kb/` | The synthetic knowledge base and evaluation queries the system is built and measured against. 42 documents, 478 labelled evaluation queries. No real customer data. |
+| `Code/IMPLEMENTATION_PLAN.md`, `Code/Design/` | Planning notes written during development. |
 | `TASKFLOW_ARCHITECTURE_REVIEW_AND_IMPLEMENTATION_PLAN.md.pdf` | An early architecture review, kept for reference. |
 
 ## The short version
